@@ -28,3 +28,8 @@ Linux - Install
 ## Connect Terminal
 
 c3270 ip_address 3270 <- port configured
+
+## Screenshots
+
+
+[Container Started]: /img/tk4-01.png "Container Started"
