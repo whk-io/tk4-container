@@ -31,6 +31,12 @@ c3270 ip_address 3270 <- port configured
 
 ## Screenshots
 
+Container Started:<br>
 <img src="/img/tk4-01.png"
      alt="Container Started"
+     style="float: left; margin-right: 10px;" />
+
+Terminal Attached:<br>
+<img src="/img/tk4-02.png"
+     alt="Terminal Attached"
      style="float: left; margin-right: 10px;" />
