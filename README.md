@@ -2,6 +2,10 @@
 
 OS/VS2 MVS 3.8j Service Level 8505 Tur(n)key Level 4- Version 1.00
 
+<img src="/img/terminal.gif"
+     alt="Terminal"
+     style="float: left; margin-right: 10px;" />
+
 ## Build container
 ```make```
 
@@ -39,4 +43,9 @@ Container Started:<br>
 Terminal Attached:<br>
 <img src="/img/tk4-02.png"
      alt="Terminal Attached"
+     style="float: left; margin-right: 10px;" />
+
+Browser Monitoring:<br>
+<img src="/img/tk4-03.png"
+     alt="Browser Monitoring"
      style="float: left; margin-right: 10px;" />
