@@ -12,7 +12,7 @@ OS/VS2 MVS 3.8j Service Level 8505 Tur(n)key Level 4- Version 1.00
 ## Run Container
 ```make run```
 
-## Brower Clients
+## Browser Clients
 
 Connect to ip_address:8038
 http://localhost:8038
