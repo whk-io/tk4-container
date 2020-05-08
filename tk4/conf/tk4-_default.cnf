@@ -1,0 +1,64 @@
+#**********************************************************************
+#***                                                                ***
+#*** File:    tk4-_default.cnf                                      ***
+#***                                                                ***
+#*** Purpose: Optional devices for MVS 3.8j TK4-                    ***
+#***          default configuration                                 ***
+#***                                                                ***
+#*** Updated: 2014/12/22                                            ***
+#***                                                                ***
+#**********************************************************************
+#
+# CTCs for MVSDDT
+#
+0610 3088 CTCT ${DDTSRVCP:=17610} ${DDTCLTIP:=127.0.0.1} ${DDTCLTCP:=18610} 1024
+0611 3088 CTCT ${DDTSRVDP:=17611} ${DDTCLTIP:=127.0.0.1} ${DDTCLTDP:=18611} 1024
+#
+# NCP VTAM
+#
+0660 3705 lport=${N660PORT:=37051} locncpnm=N07 rmtncpnm=N08 unitsz=252 ackspeed=1000
+0661 3705 lport=${N661PORT:=37052} locncpnm=N10 rmtncpnm=N11 idblk=017 idnum=00018 locsuba=10 rmtsuba=11 unitsz=252 ackspeed=1000
+0662 3705 lport=${N662PORT:=37053} locncpnm=N12 rmtncpnm=N13 idblk=017 idnum=00019 locsuba=12 rmtsuba=13 unitsz=252 ackspeed=1000
+0663 3705 lport=${N663PORT:=37054} locncpnm=N14 rmtncpnm=N15 idblk=017 idnum=0001a locsuba=14 rmtsuba=15 unitsz=252 ackspeed=1000
+#
+# NCP TCAM
+#
+0664 3705 lport=${N664PORT:=37055} locncpnm=T07 rmtncpnm=T08 unitsz=252
+0665 3705 lport=${N665PORT:=37056} locncpnm=T10 rmtncpnm=T11 idblk=017 idnum=00018 locsuba=10 rmtsuba=11 unitsz=252
+0666 3705 lport=${N666PORT:=37057} locncpnm=T12 rmtncpnm=T13 idblk=017 idnum=00019 locsuba=12 rmtsuba=13 unitsz=252
+0667 3705 lport=${N667PORT:=37058} locncpnm=T14 rmtncpnm=T15 idblk=017 idnum=0001a locsuba=14 rmtsuba=15 unitsz=252
+#
+# 3791L
+#
+0668 3705 emu3791=yes lport=${N668PORT:=37911} locsuba=3 unitsz=252 ackspeed=1000
+0669 3705 emu3791=yes lport=${N669PORT:=37912} locsuba=3 unitsz=252 ackspeed=1000
+066A 3705 emu3791=yes lport=${N66APORT:=37913} locsuba=3 unitsz=252 ackspeed=1000
+066B 3705 emu3791=yes lport=${N66BPORT:=37914} locsuba=3 unitsz=252 ackspeed=1000
+#
+# RJE stations
+#
+0670 2703 dial=in lport=${R670PORT:=37801} lnctl=bsc
+0671 2703 dial=in lport=${R671PORT:=37802} lnctl=bsc
+0672 2703 dial=in lport=${R672PORT:=37803} lnctl=bsc
+0673 2703 dial=in lport=${R673PORT:=37804} lnctl=bsc
+#
+# TTY terminals (3335, TWX)
+#
+0680 2703 dial=in lport=${T680PORT:=33351} lnctl=tele2 uctrans=yes term=tty skip=88C9DF
+0681 2703 dial=in lport=${T681PORT:=33352} lnctl=tele2 uctrans=yes term=tty skip=88C9DF
+0682 2703 dial=in lport=${T682PORT:=33353} lnctl=tele2 uctrans=yes term=tty skip=88C9DF
+0683 2703 dial=in lport=${T683PORT:=33354} lnctl=tele2 uctrans=yes term=tty skip=88C9DF
+#
+# 2741 terminals using correspondence code
+#
+0688 2703 dial=in lport=${T688PORT:=27411} lnctl=ibm1 term=2741 skip=5EDE code=corr
+0689 2703 dial=in lport=${T689PORT:=27412} lnctl=ibm1 term=2741 skip=5EDE code=corr
+068A 2703 dial=in lport=${T68APORT:=27413} lnctl=ibm1 term=2741 skip=5EDE code=corr
+068B 2703 dial=in lport=${T68BPORT:=27414} lnctl=ibm1 term=2741 skip=5EDE code=corr
+#
+# 2741 terminals using EBCD (Papertape PTTP/8) code
+#
+068C 2703 dial=in lport=${T68CPORT:=27415} lnctl=ibm1 term=2741 skip=5EDE code=ebcd
+068D 2703 dial=in lport=${T68DPORT:=27416} lnctl=ibm1 term=2741 skip=5EDE code=ebcd
+068E 2703 dial=in lport=${T68EPORT:=27417} lnctl=ibm1 term=2741 skip=5EDE code=ebcd
+068F 2703 dial=in lport=${T68FPORT:=27418} lnctl=ibm1 term=2741 skip=5EDE code=ebcd

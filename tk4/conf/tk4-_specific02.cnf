@@ -1,0 +1,22 @@
+#**********************************************************************
+#***                                                                ***
+#*** File:    tk4-_specific02.cnf                                   ***
+#***                                                                ***
+#*** Purpose: Optional devices for MVS 3.8j TK4-                    ***
+#***          minimal configuration                                 ***
+#***                                                                ***
+#*** Updated: 2014/12/22                                            ***
+#***                                                                ***
+#**********************************************************************
+#
+# CTCs for MVSDDT
+#
+0610 3088 CTCT ${DDTSRVCP:=17610} ${DDTCLTIP:=127.0.0.1} ${DDTCLTCP:=18610} 1024
+0611 3088 CTCT ${DDTSRVDP:=17611} ${DDTCLTIP:=127.0.0.1} ${DDTCLTDP:=18611} 1024
+#
+# RJE stations
+#
+0670 2703 dial=in lport=${R670PORT:=37801} lnctl=bsc
+0671 2703 dial=in lport=${R671PORT:=37802} lnctl=bsc
+0672 2703 dial=in lport=${R672PORT:=37803} lnctl=bsc
+0673 2703 dial=in lport=${R673PORT:=37804} lnctl=bsc

@@ -1,0 +1,18 @@
+ #*********************************************************************
+ #***                                                               ***
+ #*** Script:  reipl                                                ***
+ #***                                                               ***
+ #*** Purpose: Perform a re-IPL of the Sample Operating System      ***
+ #***                                                               ***
+ #*** Updated: 2015/12/18                                           ***
+ #***                                                               ***
+ #*********************************************************************
+stopall
+pause 1
+sysclear
+pause 1
+devinit 00C rdr/sample_operating_system_version_2.00.ipldeck eof
+devinit 10C rdr/dummy.card eof
+devinit 20C rdr/dummy.card eof
+devinit 30C rdr/dummy.card eof
+ipl c

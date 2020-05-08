@@ -1,0 +1,11 @@
+ #*********************************************************************
+ #***                                                               ***
+ #*** Script:  clear_console                                        ***
+ #***                                                               ***
+ #*** Purpose: load card decks to run the clear_console             ***
+ #***          program on reader $(RDR) using console $(CONS).      ***
+ #***                                                               ***
+ #*** Updated: 2015/12/18                                           ***
+ #***                                                               ***
+ #*********************************************************************
+devinit $(RDR) rdr/clear_console.deck rdr/terminal_$(CONS).card ebcdic eof multifile

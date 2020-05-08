@@ -1,0 +1,14 @@
+#**********************************************************************
+#***                                                                ***
+#*** Script:  shutdown_2ix                                          ***
+#***                                                                ***
+#*** Purpose: initiate OS/VS2-MVS 3.8j dual processor shutdown      ***
+#***          *i*x specific HAO target                              ***
+#***                                                                ***
+#*** Updated: 2016/09/15                                            ***
+#***                                                                ***
+#**********************************************************************
+hao tgt HHC00814I Processor CP00: SIGP Stop                             (05) CP01, PARM 00000000: CC 0
+hao cmd script scripts/poweroff
+hao tgt HHC00814I Processor CP01: SIGP Stop                             (05) CP00, PARM 00000000: CC 0
+hao cmd script scripts/poweroff

@@ -1,0 +1,19 @@
+#**********************************************************************
+#***                                                                ***
+#*** Script:  poweroff                                              ***
+#***                                                                ***
+#*** Purpose: clean "power off" of the emulated mainframe.          ***
+#***                                                                ***
+#*** Updated: 2013/11/18                                            ***
+#***                                                                ***
+#**********************************************************************
+* pausing for 5 seconds, please stand by.
+pause 5
+stopall
+* pausing for 5 seconds, please stand by.
+pause 5
+sysclear
+* pausing for 5 seconds, please stand by.
+pause 5
+quit
+pause 60

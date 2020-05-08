@@ -1,0 +1,12 @@
+#
+# console definitions for use with
+# MVS 3.8j TK4- manual operations.
+#
+# --> uncomment the devices to be configured
+#
+001F 3215 CONS
+# 001F 3215-C
+# 0009 3215 CONS
+# 0009 3215-C
+0010 3270 CONS
+# 0011 3270 CONS

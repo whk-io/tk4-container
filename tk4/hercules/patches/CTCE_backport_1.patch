@@ -1,0 +1,2541 @@
+--- a/README.NETWORKING	2012-11-30 11:13:08.000000000 +0100
++++ b/README.NETWORKING	2016-04-27 17:00:00.000000000 +0200
+@@ -13,7 +13,7 @@
+ CTCA connection to another instance of Hercules via a TCP/IP
+ connection.
+ 
+-All current emulations, with the exception of VMNET and CTCT use
++All current emulations, with the exception of VMNET, CTCT and CTCE use
+ the Universal TUN/TAP driver on *nix and TunTap32 (WinPCap) on
+ the Windows platforms which creates a network interface on the
+ driving system which allow Hercules to present frames to, and
+@@ -96,6 +96,7 @@
+ The currently supported emulation modes are:
+ 
+      CTCT     - CTCA Emulation via TCP connection
++     CTCE     - Enhanced CTCA Emulation via CTP connection
+      CTCI     - Point-to-point connection to the host IP stack.
+      LCS      - LAN Channel Station (3172/OSA)
+      VMNET    - Point-to-point link via SLIP/VMNET
+@@ -341,6 +342,55 @@
+ 
+ Refer to http://www.kiyoinc.com/herc3088.html for more details.
+ 
++-----------------------------------------------------------------
++CTCE - Enhanced Channel to Channel Emulation via TCP connection
++-----------------------------------------------------------------
++
++The CTCE device type will emulate a real 3088 Channel to Channnel
++Adapter also for non-IP traffic, enhancing the CTCT capabilities.
++CTCE connections are also based on TCP/IP between two (or more)
++Hercules instances, and requires an even-odd pair of port numbers 
++per device side. Only the even port numbers are to be configured; 
++the odd numbers are just derived by adding 1 to the (configured) 
++even port numbers.  The socket connection pairs cross-connect, 
++the arrows showing the send->receive direction :
++
++   x-lport-even -> y-rport-odd
++   x-lport-odd  <- y-rport-even
++
++The configuration statement for CTCE is as follows :
++
++     <devnum> CTCE <lport> <raddress> <rport> [[<mtu>] <sml>]
++
++where:
++
++     <devnum>   is the address of the CTCT device.
++
++     <lport>    is the even TCP/IP port on the local system.
++
++     <raddress> is the IP address on the remote.
++
++     <rport>    is the even TCP/IP port on the remote system.
++     
++     <mtu>      optional mtu buffersize, defaults to 32778
++     
++     <sml>      optional small minimum for mtu, defaults to 8 
++
++A sample CTCE device configuration is shown below:
++
++   Hercules PC Host A with IP address 192.168.1.100 :
++
++      0E40  CTCE  30880  192.168.1.200  30880
++      0E41  CTCE  30882  192.168.1.200  30882
++
++   Hercules PC Host B with IP address 192.168.1.200 :
++
++      0E40  CTCE  30880  192.168.1.100  30880
++      0E41  CTCE  30882  192.168.1.100  30882
++
++CTCE connected Hercules instances can be hosted on either Unix
++or Windows platforms, both sides do not need to be the same.
++ 
+ 
+ -----------------------------------------------------------------
+ PTP      - MPCPTP/PCPTP6 Channel to Channel link
+--- a/ctc_lcs.c	2012-11-30 11:13:08.000000000 +0100
++++ b/ctc_lcs.c	2016-04-27 17:00:00.000000000 +0200
+@@ -2695,6 +2695,7 @@
+     HDL_DEVICE(3088, ctcadpt_device_hndinfo );
+     HDL_DEVICE(CTCI, ctci_device_hndinfo    );
+     HDL_DEVICE(CTCT, ctct_device_hndinfo    );
++    HDL_DEVICE(CTCE, ctce_device_hndinfo    );
+     HDL_DEVICE(VMNET,vmnet_device_hndinfo   );
+ #if defined(WIN32)
+     HDL_DEVICE(CTCI-W32,ctci_device_hndinfo );
+--- a/ctcadpt.c	2012-11-30 11:13:08.000000000 +0100
++++ b/ctcadpt.c	2016-04-27 17:00:00.000000000 +0200
+@@ -11,8 +11,9 @@
+ // Hercules Channel-to-Channel Emulation Support
+ // ====================================================================
+ //
+-// vmnet - (c) Copyright Willem Konynenberg, 2000-2009
+-// CTCT  - (c) Copyright Vic Cross, 2001-2009
++// vmnet - (C) Copyright Willem Konynenberg, 2000-2009
++// CTCT  - (C) Copyright Vic Cross, 2001-2009
++// CTCE  - (C) Copyright Peter J. Jansen, 2014-2015
+ //
+ 
+ // Notes:
+@@ -36,6 +37,45 @@
+ #include "opcode.h"
+ #include "devtype.h"
+ 
++// --------------------------------------------------------------------
++// CTCE Info also for use by CTCE Tracing when requested
++// --------------------------------------------------------------------
++
++typedef struct _CTCE_INFO
++{
++    BYTE               state_x_prev;   /* This  side previous state  */
++    BYTE               state_y_prev;   /* Other side previous state  */
++    BYTE               actions;        /* Triggered by CCW received  */
++    BYTE               state_new;      /* The updated FSM state      */
++    BYTE               x_unit_stat;    /* Resulting device unit stat */
++    BYTE               scb;            /* Last SCB returned          */
++    BYTE               busy_waits;     /* Number of times waited for */
++                                       /* a Busy condition to end    */
++    BYTE               de_ready;       /* Device-End status          */
++                                       /* indicating ready to be     */
++                                       /* presented, yielding ...    */
++    BYTE               sent;           /* = 1 if CTCE_Send done      */
++    int                wait_rc;        /* CTCE_Send Wait RC if used  */
++    int                de_ready_attn_rc;   /* device_attention RC    */
++    int                working_attn_rc;    /* device_attention RC    */
++                                       /* from transition to         */
++                                       /* "Working(D)" state         */
++    int                working_attn_retry; /* retry count for this   */
++    int                sok_buf_len;    /* socket buffer length       */
++}
++CTCE_INFO;
++
++// --------------------------------------------------------------------
++// CTCE_Cmd_Xfr enumeration type used by CTCE_Trace
++// --------------------------------------------------------------------
++
++enum CTCE_Cmd_Xfr
++{
++    CTCE_LCL,                          /* Cmd remains Local only     */
++    CTCE_SND,                          /* Cmd Send to y-side         */
++    CTCE_RCV                           /* Cmd Received from y-side   */
++};
++
+ // ====================================================================
+ // Declarations
+ // ====================================================================
+@@ -52,6 +92,34 @@
+ 
+ static void*    CTCT_ListenThread( void* argp );
+ 
++static void     CTCE_ExecuteCCW( DEVBLK* pDEVBLK, BYTE  bCode,
++                                 BYTE    bFlags,  BYTE  bChained,
++                                 U32     sCount,  BYTE  bPrevCode,
++                                 int     iCCWSeq, BYTE* pIOBuf,
++                                 BYTE*   pMore,   BYTE* pUnitStat,
++                                 U32*    pResidual );
++
++static int      CTCE_Init( DEVBLK *dev, int argc, char *argv[] );
++
++static void     CTCE_Send( DEVBLK* pDEVBLK,   U32        sCount,
++                            BYTE*  pIOBuf,    BYTE*      pUnitStat,
++                            U32*   pResidual, CTCE_INFO* pCTCE_Info );
++
++static void*    CTCE_RecvThread( void* argp );
++
++static void*    CTCE_ListenThread( void* argp );
++
++static void     CTCE_Halt( DEVBLK* pDEVBLK );
++
++static U32      CTCE_ChkSum( const BYTE* pBuf, const U16 BufLen );
++
++static void     CTCE_Trace( const DEVBLK*             pDEVBLK,
++                            const U32                 sCount,
++                            const enum CTCE_Cmd_Xfr   eCTCE_Cmd_Xfr,
++                            const CTCE_INFO*          pCTCE_Info,
++                            const BYTE*               pCTCE_Buf,
++                            const BYTE*               pUnitStat );
++
+ static int      VMNET_Init( DEVBLK *dev, int argc, char *argv[] );
+ 
+ static int      VMNET_Write( DEVBLK *dev, BYTE *iobuf,
+@@ -73,6 +141,363 @@
+ CTCG_PARMBLK;
+ 
+ // --------------------------------------------------------------------
++// CTCE Send-Receive Socket Prefix at the start of the DEVBLK buf
++// --------------------------------------------------------------------
++
++typedef struct _CTCE_SOKPFX
++{
++    BYTE                CmdReg;        /* CTCE command register      */
++    BYTE                FsmSta;        /* CTCE FSM state             */
++    U16                 sCount;        /* CTCE sCount copy           */
++    U16                 PktSeq;        /* CTCE Packet Sequence ID    */
++    U16                 SndLen;        /* CTCE Packet Sent Length    */
++    U16                 DevNum;        /* CTCE Sender's devnum       */
++    U16                 ssid;          /* CTCE Sender's ssid         */
++}
++CTCE_SOKPFX;
++
++// --------------------------------------------------------------------
++// CTCE Equivalent of CTCG_PARMBLK
++// --------------------------------------------------------------------
++
++typedef struct _CTCE_PARMBLK
++{
++    int                 listenfd[2];   /* [0] = read, [1] = write    */
++    struct sockaddr_in  addr;
++    DEVBLK*             dev;
++}
++CTCE_PARMBLK;
++
++// --------------------------------------------------------------------
++// CTCE Constants (generated by a small REXX script)
++// --------------------------------------------------------------------
++
++#define CTCE_PREPARE                0
++#define CTCE_CONTROL                1
++#define CTCE_READ                   2
++#define CTCE_WRITE                  3
++#define CTCE_SENSE_COMMAND_BYTE     4
++#define CTCE_READ_BACKWARD          6
++#define CTCE_WRITE_END_OF_FILE      7
++#define CTCE_NO_OPERATION           8
++#define CTCE_SET_EXTENDED_MODE      9
++#define CTCE_SENSE_ADAPTER_STATE    10
++#define CTCE_SENSE_ID               11
++#define CTCE_READ_CONFIG_DATA       12
++#define CTCE_SET_BASIC_MODE         15
++
++static char *CTCE_CmdStr[16] = {
++    "PRE" , //  0 = 00 = Prepare
++    "CTL" , //  1 = 01 = Control
++    "RED" , //  2 = 02 = Read
++    "WRT" , //  3 = 03 = Write
++    "SCB" , //  4 = 04 = Sense Command Byte
++    "???" , //  5 = 05 = Not Used
++    "RBK" , //  6 = 06 = Read Backward
++    "WEF" , //  7 = 07 = Write End Of File
++    "NOP" , //  8 = 10 = No Operation
++    "SEM" , //  9 = 11 = Set Extended Mode
++    "SAS" , // 10 = 12 = Sense Adapter State
++    "SID" , // 11 = 13 = Sense ID
++    "RCD" , // 12 = 14 = Read Configuration Data
++    "???" , // 13 = 15 = Invalid Command Code
++    "CB0" , // 14 = 16 = Invalid Command Code Used to Report SCB 0
++    "SBM"   // 15 = 17 = Set Basic Mode
++};
++
++static BYTE CTCE_Cmd[256] = {
++    14, 3, 2, 8,10, 3, 2, 1,13, 3, 2, 8, 6, 3, 2, 1,
++    13, 3, 2, 8, 4, 3, 2, 1,13, 3, 2, 8, 6, 3, 2, 1,
++    13, 3, 2, 8,13, 3, 2, 1,13, 3, 2, 8, 6, 3, 2, 1,
++    13, 3, 2, 8, 4, 3, 2, 1,13, 3, 2, 8, 6, 3, 2, 1,
++    13, 3, 2,15,13, 3, 2, 1,13, 3, 2,13, 6, 3, 2, 1,
++    13, 3, 2,15, 4, 3, 2, 1,13, 3, 2,13, 6, 3, 2, 1,
++    13, 3, 2,15,13, 3, 2, 1,13, 3, 2,13, 6, 3, 2, 1,
++    13, 3, 2,15, 4, 3, 2, 1,13, 3, 2,13, 6, 3, 2, 1,
++    13, 7, 2, 8,13, 7, 2, 1,13, 7, 2, 8, 6, 7, 2, 1,
++    13, 7, 2, 8, 4, 7, 2, 1,13, 7, 2, 8, 6, 7, 2, 1,
++    13, 7, 2, 8,13, 7, 2, 1,13, 7, 2, 8, 6, 7, 2, 1,
++    13, 7, 2, 8, 4, 7, 2, 1,13, 7, 2, 8, 6, 7, 2, 1,
++    13, 7, 2, 9,13, 7, 2, 1,13, 7, 2,13, 6, 7, 2, 1,
++    13, 7, 2,13, 4, 7, 2, 1,13, 7, 2,13, 6, 7, 2, 1,
++    13, 7, 2, 0,11, 7, 2, 1,13, 7, 2,13, 6, 7, 2, 1,
++    13, 7, 2,13, 4, 7, 2, 1,13, 7, 2,13, 6, 7, 2, 1
++};
++
++#define IS_CTCE_CCW_PRE(c)      ((CTCE_Cmd[c]==0))
++#define IS_CTCE_CCW_CTL(c)      ((CTCE_Cmd[c]==1))
++#define IS_CTCE_CCW_RED(c)      ((CTCE_Cmd[c]==2))
++#define IS_CTCE_CCW_WRT(c)      ((CTCE_Cmd[c]==3))
++#define IS_CTCE_CCW_SCB(c)      ((CTCE_Cmd[c]==4))
++#define IS_CTCE_CCW_RBK(c)      ((CTCE_Cmd[c]==6))
++#define IS_CTCE_CCW_WEF(c)      ((CTCE_Cmd[c]==7))
++#define IS_CTCE_CCW_NOP(c)      ((CTCE_Cmd[c]==8))
++#define IS_CTCE_CCW_SEM(c)      ((CTCE_Cmd[c]==9))
++#define IS_CTCE_CCW_SAS(c)      ((CTCE_Cmd[c]==10))
++#define IS_CTCE_CCW_SID(c)      ((CTCE_Cmd[c]==11))
++#define IS_CTCE_CCW_RCD(c)      ((CTCE_Cmd[c]==12))
++#define IS_CTCE_CCW_RDY(c)      ((CTCE_Cmd[c]<10))
++#define IS_CTCE_CCW_RDA(c)      (((CTCE_Cmd[c]&0xFB)==2)) /* Read or Read Backward */
++#define IS_CTCE_CCW_WRA(c)      (((CTCE_Cmd[c]&0xFB)==3)) /* Write or Write EOF    */
++
++/* Macros for classifying CTC states follow.  */
++/* These are numbered 0 thru 7 as per the     */
++/* column numbers 0-3 and 4-7 in the table    */
++/* in section 2.13 in SA22-7203-00 by IBM,    */
++/* which is (alomost) the same as the table   */
++/* in section 3.15 in SA22-7901-01 by IBM.    */
++/*                                            */
++/* But in base (non-extended) mode, the table */
++/* in section 2.13 in SA77-7901-01 applies,   */
++/* omitting column 5 for the Not-Ready state: */
++/* base (non-extended) mode considers this    */
++/* the same as Available.  We perform this    */
++/* Base-Not-Ready mapping into Available with */
++/* this macro:                                */
++#define CTCE_STATE(c)           (pDEVBLK->ctcxmode == 1 ?  ((c)&0x07) : \
++                                (((c)&0x07)==0x05 ? 0x04 : ((c)&0x07)))
++
++#define IS_CTCE_YWP(c)          (((c)&0x07)==0x00)
++#define IS_CTCE_YWC(c)          (((c)&0x07)==0x01)
++#define IS_CTCE_YWR(c)          (((c)&0x07)==0x02)
++#define IS_CTCE_YWW(c)          (((c)&0x07)==0x03)
++#define IS_CTCE_YAV(c)          ((CTCE_STATE(c))==0x04)
++#define IS_CTCE_YNR(c)          ((CTCE_STATE(c))==0x05)
++#define IS_CTCE_XWK(c)          (((c)&0x07)==0x06)
++#define IS_CTCE_XIP(c)          (((c)&0x07)==0x07)
++
++/* These two are useful combinations :        */
++/* - The 0 (YWP) or 4 (YAV) states READY      */
++#define IS_CTCE_YAP(c)          (((CTCE_STATE(c))&0x03)==0x00)
++/* - Any Y working state: YWP, YWC, YWR or YWW */
++#define IS_CTCE_YWK(c)          (((c)&0x04)==0x00)
++/* - Any of the states Cntl, Read, or Write   */
++#define IS_CTCE_CRW(c)         ((((c)&0x04)==0x00) && (((c)&0x07)!=0x00))
++
++/* A special one is "X available" (XAV) which */
++/* includes the not ready state.              */
++#define IS_CTCE_XAV(c)          (((c)<6))
++
++/* And the corresponding SET macros for these */
++/* The first four, i.e. a SET to any YWK,     */
++/* includes the setting of the CTCE_WAIT bit. */
++#define SET_CTCE_YWP(c)         (c=(((c)&0xF8)|0x00))
++#define SET_CTCE_YWC(c)         (c=(((c)&0xF8)|0x01))
++#define SET_CTCE_YWR(c)         (c=(((c)&0xF8)|0x02))
++#define SET_CTCE_YWW(c)         (c=(((c)&0xF8)|0x03))
++#define SET_CTCE_YAV(c)         (c=(((c)&0xF8)|0x04))
++#define SET_CTCE_YNR(c)         (c=(((c)&0xF8)|0x05))
++#define SET_CTCE_XWK(c)         (c=(((c)&0xF8)|0x06))
++#define SET_CTCE_XIP(c)         (c=((c)|0x07))
++
++/* One letter CTC state abbreviations         */
++static char *CTCE_StaStr[8] = {"P", "C", "R", "W", "A", "N", "X", "I"};
++
++/* The CTCE CCW command will trigger actions  */
++/* which are dependent on the CTCE state.     */
++/* These different action flags are :         */
++#define CTCE_WEOF               (0x80)
++#define CTCE_SEND               (0x40)
++#define CTCE_WAIT               (0x20)
++#define CTCE_ATTN               (0x10)
++#define CTCE_MATCH              (0x08)
++
++/* Corresponding macros to test for these     */
++#define IS_CTCE_WEOF(c)         (((c)&CTCE_WEOF)==CTCE_WEOF)
++#define IS_CTCE_SEND(c)         (((c)&CTCE_SEND)==CTCE_SEND)
++#define IS_CTCE_WAIT(c)         (((c)&CTCE_WAIT)==CTCE_WAIT)
++#define IS_CTCE_ATTN(c)         (((c)&CTCE_ATTN)==CTCE_ATTN)
++#define IS_CTCE_MATCH(c)        (((c)&CTCE_MATCH)==CTCE_MATCH)
++
++/* And the corresponding SET macros for these */
++#define SET_CTCE_WEOF(c)        (c|=CTCE_WEOF)
++#define SET_CTCE_SEND(c)        (c|=CTCE_SEND)
++#define SET_CTCE_WAIT(c)        (c|=CTCE_WAIT)
++#define SET_CTCE_ATTN(c)        (c|=CTCE_ATTN)
++#define SET_CTCE_MATCH(c)       (c|=CTCE_MATCH)
++
++/* And the corresponding CLeaR macros         */
++#define CLR_CTCE_WEOF(c)        (c&=~CTCE_WEOF)
++#define CLR_CTCE_SEND(c)        (c&=~CTCE_SEND)
++#define CLR_CTCE_WAIT(c)        (c&=~CTCE_WAIT)
++#define CLR_CTCE_ATTN(c)        (c&=~CTCE_ATTN)
++#define CLR_CTCE_MATCH(c)       (c&=~CTCE_MATCH)
++
++/* To CLeaR all flags                         */
++#define CLR_CTCE_ALLF(c)        (c&=~CTCE_WEOF)
++
++/* Enhanced CTC processing is selected by     */
++/* omitting default MTU bufsize CTCE_MTU_MIN, */
++/* or by specifying a larger number.  The     */
++/* default is equal to 61592, calculated as   */
++/*    sizeof(CTCE_SOKPFX) +                   */
++/*    sizeof(U16=pSokBuf->sCount=2) +         */
++/*    61578 (=0xF08A)                         */
++/* the latter number is the largest data      */
++/* sCount seen used by  CTC programs to date. */
++/* If that number would be too small one day, */
++/* a severe error message will instruct the   */
++/* user to specify an increased MTU bufsize   */
++/* in the device configuration statement.     */
++#define CTCE_MTU_MIN ( (int)( 61578 + sizeof(CTCE_SOKPFX) + sizeof(U16 /* sCount */) ) )
++
++/**********************************************************************/
++/* A summary of the Channel-to-Channel command operations this CTCE   */
++/* device emulates can be found in IBM publications SA22-7203-00 in   */
++/* section 2.13, and in SA22-7091-01 sections 2.13 and 3.15.  The     */
++/* tables show the device states of both sides, and the influence of  */
++/* CCW commands depending on this state.  Our CTCE implemention is    */
++/* assisted by a Finite State Machine (FSM) table closely matching    */
++/* the figures in these prublications.                                */
++/*                                                                    */
++/* Eeach CTCE side is in a given state at any point in time, which    */
++/* corresponds to the columns in the FSM table, matching columns 0    */
++/* through 7 in the publications mentionned.  Each CCW command has a  */
++/* row in the FSM table.  A CCW command received will (1) trigger a   */
++/* transition to a new_state, (2) cause a Unit Status update, and (3) */
++/* cause a number of actions to be carried out.                       */
++/*                                                                    */
++/* The FSM table coding is assisted with macro's for the state each   */
++/* CTCE side (x=local, y=remote) can have, matching the FSM column    */
++/* column numbers 0-7: Prepare, Control, Read, Write, Available,      */
++/* Not-ready, X-working (=P/C/R/W) or Int-pending, all represented by */
++/* a single letter: P, C, R, W, A, N, X, I.  Additionally, the CTCE   */
++/* FSM table uses U for Unchanged to cover the case of no state       */
++/* change whatsoever, e.g. for CCW commands SAS, SID, RCD and others. */
++/* Please see macro's CTCE_NEW_X_STATE & CTCE_NEW_Y_STATE down below. */
++/**********************************************************************/
++#define P    0
++#define C    1
++#define R    2
++#define W    3
++#define A    4
++#define N    5
++#define X    6
++#define I    7
++#define U  255
++
++/**********************************************************************/
++/* Each CTCE FSM table entry contains a macro up to 7 letters long:   */
++/*                                                                    */
++/*      +---------- new_state = P, C, R, W, A or U                    */
++/*      |++-------- Unit Status bits encoded with up to two letters:  */
++/*      |||         . CD = CE + DE                                    */
++/*      |||         . C  = CE                                         */
++/*      |||         . BA = BUSY + ATTN                                */
++/*      |||         . B  = BUSY                                       */
++/*      |||         . UC = Unit Check                                 */
++/*      |||+------- S = Send this commands also to the other (y-)side */
++/*      ||||+------ M = a Matching command for the other (y-)side     */
++/*      |||||+----- W = our (x-)side must Wait for a matching command */
++/*      ||||||+---- A = cause Attention interrupt at the other y-side */
++/*      |||||||                                                       */
++#define PC_S_W  { P, CSW_CE             , 0, CTCE_SEND              | CTCE_WAIT             }
++#define C__S_WA { C, 0                  , 0, CTCE_SEND              | CTCE_WAIT | CTCE_ATTN }
++#define R__S_WA { R, 0                  , 0, CTCE_SEND              | CTCE_WAIT | CTCE_ATTN }
++#define W__S_WA { W, 0                  , 0, CTCE_SEND              | CTCE_WAIT | CTCE_ATTN }
++#define CC_SMW  { C, CSW_CE             , 0, CTCE_SEND | CTCE_MATCH | CTCE_WAIT             }
++#define R__SMW  { R, 0                  , 0, CTCE_SEND | CTCE_MATCH | CTCE_WAIT             }
++#define W__SMW  { W, 0                  , 0, CTCE_SEND | CTCE_MATCH | CTCE_WAIT             }
++#define ACDSM   { A, CSW_CE   | CSW_DE  , 0, CTCE_SEND | CTCE_MATCH                         }
++#define ACDS    { A, CSW_CE   | CSW_DE  , 0, CTCE_SEND                                      }
++#define AUCS    { A,       CSW_UC       , 0, CTCE_SEND                                      }
++#define  CDSM   { U, CSW_CE   | CSW_DE  , 0, CTCE_SEND | CTCE_MATCH                         }
++#define  CDS    { U, CSW_CE   | CSW_DE  , 0, CTCE_SEND                                      }
++#define  CD     { U, CSW_CE   | CSW_DE  , 0, 0                                              }
++#define  B      { U, CSW_BUSY           , 0, 0                                              }
++#define  BA     { U, CSW_BUSY | CSW_ATTN, 0, 0                                              }
++#define  UC     { U,       CSW_UC       , 0, 0                                              }
++#define  UCS    { U,       CSW_UC       , 0, CTCE_SEND                                      }
++
++/**********************************************************************/
++/* Now finally the CTCE FSM table:                                    */
++/**********************************************************************/
++static struct CTCE_FsmEnt {
++   BYTE new_state;
++   BYTE x_unit_stat;
++   BYTE y_unit_stat;
++   BYTE actions;
++}
++const CTCE_Fsm[16][8] = {
++/* cmd/stat P       C       R       W       A       N       X       I     */
++/* PRE */ {ACDSM  , CD    , CD    , CD    ,PC_S_W , UCS   , B     , B     },
++/* CTL */ {CC_SMW , BA    , BA    , BA    ,C__S_WA, UCS   , B     , B     },
++/* RED */ {R__SMW , BA    , BA    ,ACDSM  ,R__S_WA, UCS   , B     , B     },
++/* WRT */ {W__SMW , BA    ,ACDSM  , BA    ,W__S_WA, UCS   , B     , B     },
++/* SCB */ { CD    ,ACDSM  , CD    , CD    , CD    , UCS   , B     , B     },
++/* nus */ { UC    , UC    , UC    , UC    , UC    , UC    , B     , B     },
++/* RBK */ {R__SMW , BA    , BA    ,ACDSM  ,R__S_WA, UCS   , B     , B     },
++/* WEF */ { CDS   , BA    ,ACDSM  , BA    , CDS   , UCS   , B     , B     },
++/* NOP */ { CD    , BA    , BA    , BA    , CD    , UC    , B     , B     },
++/* SEM */ { CDS   , BA    , BA    , BA    ,ACDS   ,AUCS   , B     , B     },
++
++/* SAS */ { CD    , CD    , CD    , CD    , CD    , CD    , B     , B     },
++/* SID */ { CD    , CD    , CD    , CD    , CD    , CD    , B     , B     },
++/* RCD */ { CD    , CD    , CD    , CD    , CD    , CD    , B     , B     },
++
++/* inv */ { UC    , UC    , UC    , UC    , UC    , UC    , B     , B     },
++/* CB0 */ { UC    , UC    , UC    , UC    , UC    , UC    , B     , B     },
++/* SBM */ { UC    , UC    , UC    , UC    , UC    , UC    , B     , B     }
++};
++
++#undef P
++#undef C
++#undef R
++#undef W
++#undef A
++#undef N
++#undef X
++#undef I
++#undef U
++
++#undef PC_S_W
++#undef C__S_WA
++#undef R__S_WA
++#undef W__S_WA
++#undef CC_SMW
++#undef R__SMW
++#undef W__SMW
++#undef ACDSM
++#undef ACDS
++#undef AUCS
++#undef  CDSM
++#undef  CDS
++#undef  CD
++#undef  B
++#undef  BA
++#undef  UC
++#undef  UCS
++
++#define CTCE_ACTIONS_PRT(s)     IS_CTCE_WEOF(s)  ? _(" WEOF")  : _("") \
++                              , IS_CTCE_WAIT(s)  ? _(" WAIT")  : _("") \
++                              , IS_CTCE_MATCH(s) ? _(" MATCH") : _("") \
++                              , IS_CTCE_ATTN(s)  ? _(" ATTN")  : _("")
++
++#define CTCE_X_STATE_FSM_IDX(c)                                             \
++    ( ( ( pDEVBLK->ctcexState & 0x04 ) == 0x00 ) ? 0x06 : CTCE_STATE( pDEVBLK->ctceyState ) )
++
++#define CTCE_Y_STATE_FSM_IDX(c)                                             \
++    ( ( ( pDEVBLK->ctceyState & 0x04 ) == 0x00 ) ? 0x06 : CTCE_STATE( pDEVBLK->ctcexState ) )
++
++#define CTCE_NEW_X_STATE(c)                                                 \
++    ( ( CTCE_Fsm[CTCE_Cmd[c]][CTCE_X_STATE_FSM_IDX(c)].new_state != 255 ) ? \
++      ( CTCE_Fsm[CTCE_Cmd[c]][CTCE_X_STATE_FSM_IDX(c)].new_state )        : \
++      ( pDEVBLK->ctcexState & 0x07) )
++
++#define CTCE_NEW_Y_STATE(c)                                                 \
++    ( ( CTCE_Fsm[CTCE_Cmd[c]][CTCE_Y_STATE_FSM_IDX(c)].new_state != 255 ) ? \
++      ( CTCE_Fsm[CTCE_Cmd[c]][CTCE_Y_STATE_FSM_IDX(c)].new_state )        : \
++      ( pDEVBLK->ctceyState & 0x07) )
++
++#define CTCE_DISABLE_NAGLE
++#define CTCE_UDP
++
++/* The following macro's attempt to maximize source commonality between  */
++/* different Hercules versions, whilst adhering to different styles.     */
++#define CTCX_DEVNUM(p)          SSID_TO_LCSS(p->ssid), p->devnum
++#define CTCE_FILENAME           pDEVBLK->filename + 0
++
++// --------------------------------------------------------------------
+ // Device Handler Information Block
+ // --------------------------------------------------------------------
+ 
+@@ -134,6 +559,35 @@
+         NULL                           /* Hercules resume            */
+ };
+ 
++DEVHND ctce_device_hndinfo =
++{
++        &CTCE_Init,                    /* Device Initialisation      */
++        &CTCE_ExecuteCCW,              /* Device CCW execute         */
++        &CTCX_Close,                   /* Device Close               */
++        &CTCX_Query,                   /* Device Query               */
++        NULL,                          /* Device Extended Query      */
++        NULL,                          /* Device Start channel pgm   */
++        NULL,                          /* Device End channel pgm     */
++        NULL,                          /* Device Resume channel pgm  */
++        NULL,                          /* Device Suspend channel pgm */
++        &CTCE_Halt,                    /* Device Halt channel pgm    */
++        NULL,                          /* Device Read                */
++        NULL,                          /* Device Write               */
++        NULL,                          /* Device Query used          */
++        NULL,                          /* Device Reserve             */
++        NULL,                          /* Device Release             */
++        NULL,                          /* Device Attention           */
++        NULL,                          /* Immediate CCW Codes        */
++        NULL,                          /* Signal Adapter Input       */
++        NULL,                          /* Signal Adapter Output      */
++        NULL,                          /* Signal Adapter Sync        */
++        NULL,                          /* Signal Adapter Output Mult */
++        NULL,                          /* QDIO subsys desc           */
++        NULL,                          /* QDIO set subchan ind       */
++        NULL,                          /* Hercules suspend           */
++        NULL                           /* Hercules resume            */
++};
++
+ DEVHND vmnet_device_hndinfo =
+ {
+         &VMNET_Init,                   /* Device Initialisation      */
+@@ -219,6 +673,7 @@
+ 
+ int  CTCX_Close( DEVBLK* pDEVBLK )
+ {
++
+     // Close the device file (if not already closed)
+     if( pDEVBLK->fd >= 0 )
+     {
+@@ -228,7 +683,6 @@
+             close( pDEVBLK->fd );
+         pDEVBLK->fd = -1;           // indicate we're now closed
+     }
+-
+     return 0;
+ }
+ 
+@@ -745,24 +1199,6 @@
+         return;
+     }
+ 
+-#if 0
+-    // Notes: It appears that TurboLinux has gotten sloppy in their
+-    //        ways. They are now giving us buffer sizes that are
+-    //        greater than the CCW count, but the segment size
+-    //        is within the count.
+-    // Check that the frame offset is valid
+-    if( sOffset < sizeof( CTCIHDR ) || sOffset > sCount )
+-    {
+-        logmsg( _("CTC101W %4.4X: Write buffer contains invalid "
+-                  "frame offset %u\n"),
+-                pDEVBLK->devnum, sOffset );
+-
+-        pDEVBLK->sense[0] = SENSE_CR;
+-        *pUnitStat        = CSW_CE | CSW_DE | CSW_UC;
+-        return;
+-    }
+-#endif
+-
+     // Adjust the residual byte count
+     *pResidual -= sizeof( CTCIHDR );
+ 
+@@ -1327,3 +1763,1468 @@
+ /* End of VMNET functions written by Willem Konynenberg              */
+ /*-------------------------------------------------------------------*/
+ 
++// ====================================================================
++// CTCE Support
++// ====================================================================
++
++// CTC Enhanced
++// ============
++//   Enhanced CTC functionality is designed to emulate real
++//   3088 CTC Adapter hardware, using a pair of TCP sockets
++//   with a likewise configured Hercules instance on a
++//   different PC (or same PC).  The new device type is CTCE.
++
++//   The implementation is based mostly on IBM publications,
++//   "ESCON Channel-to-Channel Adapter", SA22-7203-00, and
++//   also  "Channel-to-Channel Adapter", SA22-7091-01, although
++//   no claim for completeness of this implemenation is feasible.
++
++//   The CTCE configuration is similar to the CTCT device.  The
++//   MTU bufsize parameter is optional, but when specified must be
++//   >= CTCE_MTU_MIN (=61592). This is the default value when omitted.
++//   (Please note that 61592 = sizeof(CTCE_SOKPFX) + sizeof(sCount) + 0xF08A
++//   the latter being the maximum sCount experienced in CTC CCW programs.)
++
++//   CTCE requires an even-odd pair of port numbers per device side
++//   but only the even port numbers are to be configured; the odd
++//   numbers are just derived by adding 1 to the (configured) even
++//   port numbers.  The socket connection pairs cross-connect, the
++//   arrows showing the send->receive direction :
++//
++//      x-lport-even -> y-rport-odd
++//      x-lport-odd  <- y-rport-even
++//
++//   A sample CTCE device configuration is shown below:
++//
++//      Hercules PC Host A with IP address 192.168.1.100 :
++//
++//         0E40  CTCE  30880  192.168.1.200  30880
++//         0E41  CTCE  30882  192.168.1.200  30882
++//
++//      Hercules PC Host B with IP address 192.168.1.200 :
++//
++//         0E40  CTCE  30880  192.168.1.100  30880
++//         0E41  CTCE  30882  192.168.1.100  30882
++
++// -------------------------------------------------------------------
++// Execute a Channel Command Word (CTCE)
++// -------------------------------------------------------------------
++
++void  CTCE_ExecuteCCW( DEVBLK* pDEVBLK, BYTE  bCode,
++                       BYTE    bFlags,  BYTE  bChained,
++                       U32     sCount,  BYTE  bPrevCode,
++                       int     iCCWSeq, BYTE* pIOBuf,
++                       BYTE*   pMore,   BYTE* pUnitStat,
++                       U32*    pResidual )
++{
++    int             iNum;               // Number of bytes to move
++    CTCE_PARMBLK    parm;               // Parameters for the server
++                                        //   as in CTCE_Init, used here for the client side
++    int             optval;             // Argument for setsockopt
++    char*           remaddr;            // Remote IP address
++    char            address[20]="";     // temp space for IP address
++    int             rc;                 // Return code
++    CTCE_INFO       CTCE_Info;          // CTCE information (also for tracing)
++
++    UNREFERENCED( bFlags    );
++    UNREFERENCED( bChained  );
++    UNREFERENCED( bPrevCode );
++    UNREFERENCED( iCCWSeq   );
++    UNREFERENCED( pMore     );
++
++    // Initialise our CTCE_Info and save the previous x- and y-states in it.
++    CTCE_Info.wait_rc          = 0;
++    CTCE_Info.de_ready         = 0;
++    CTCE_Info.de_ready_attn_rc = 0;
++    CTCE_Info.working_attn_rc  = 0;
++    CTCE_Info.busy_waits       = 0;
++    CTCE_Info.sent             = 0;
++    CTCE_Info.sok_buf_len      = 0;
++    CTCE_Info.state_x_prev     = pDEVBLK->ctcexState;
++    CTCE_Info.state_y_prev     = pDEVBLK->ctceyState;
++
++    // Connect to the partner CTCE device if the device file is not open
++    if (pDEVBLK->fd < 0)
++    {
++
++        // It's a little confusing, but we're using a couple of the
++        // members of the server paramter structure to initiate the
++        // outgoing connection.  Saves a couple of variable declarations,
++        // though.  If we feel strongly about it, we can declare separate
++        // variables...
++
++        // make a TCP socket
++        parm.listenfd[0] = socket(AF_INET, SOCK_STREAM, 0);
++        if( parm.listenfd[0] < 0 )
++        {
++            WRMSG( HHC05050, "E",  /* CTCE: Error creating socket: %s */
++                CTCX_DEVNUM( pDEVBLK ), strerror( HSO_errno ) );
++            *pUnitStat = CSW_CE | CSW_DE | CSW_UC;
++            release_lock( &pDEVBLK->lock );
++            return;
++        }
++
++        // Allow previous instance of socket to be reused
++        optval = 1;
++        setsockopt( parm.listenfd[0], SOL_SOCKET, SO_REUSEADDR,
++            ( GETSET_SOCKOPT_T* )&optval, sizeof( optval ) );
++
++#if defined(CTCE_DISABLE_NAGLE)
++        optval = 1;
++        rc = setsockopt( parm.listenfd[0], IPPROTO_TCP, TCP_NODELAY,
++            ( char* )&optval, sizeof( optval ) );
++        if( rc < 0 )
++        {
++            WRMSG( HHC05051, "E",  /* CTCE: TCP_NODELAY error for socket (port %d): %s */
++                CTCX_DEVNUM( pDEVBLK ), pDEVBLK->ctce_lport, strerror(HSO_errno));
++            *pUnitStat = CSW_CE | CSW_DE | CSW_UC;
++            release_lock(&pDEVBLK->lock);
++            return;
++        }
++#endif
++
++        // bind socket to our local port
++        // (might seem like overkill, and usually isn't done, but doing this
++        // bind() to the local port we configure gives the other end a chance
++        // at validating the connection request)
++        memset( &( parm.addr ), 0, sizeof( parm.addr ) );
++        parm.addr.sin_family = AF_INET;
++        parm.addr.sin_port = htons( pDEVBLK->ctce_lport );
++        parm.addr.sin_addr.s_addr = htonl( INADDR_ANY );
++
++        rc = bind( parm.listenfd[0],
++            ( struct sockaddr * )&parm.addr,
++            sizeof( parm.addr ) );
++        if( rc < 0 )
++        {
++            WRMSG( HHC05052, "E",  /* CTCE: Error binding to socket (port %d): %s */
++                CTCX_DEVNUM( pDEVBLK ), pDEVBLK->ctce_lport, strerror( HSO_errno ) );
++            *pUnitStat = CSW_CE | CSW_DE | CSW_UC;
++            release_lock( &pDEVBLK->lock );
++            return;
++        }
++        strcpy( address, inet_ntoa( pDEVBLK->ctce_ipaddr ) );
++        remaddr = address;
++
++        // initiate a connection to the other end
++        memset( &( parm.addr ), 0, sizeof( parm.addr ) );
++        parm.addr.sin_family = AF_INET;
++
++        // the even (=read) port must connect to the odd (=write) port
++        // at the other side and vice-versa
++        parm.addr.sin_port = htons(pDEVBLK->ctce_rport + 1 );
++        parm.addr.sin_addr = pDEVBLK->ctce_ipaddr;
++        rc = connect( parm.listenfd[0],
++            ( struct sockaddr * )&parm.addr,
++            sizeof( parm.addr) );
++
++        // if connection was not successful, then we may retry later on when the other side becomes ready.
++        if( rc < 0 )
++        {
++            WRMSG( HHC05053, "I",  /* CTCE: Connect error :%d -> %s:%d, %s */
++                CTCX_DEVNUM( pDEVBLK ), pDEVBLK->ctce_lport, remaddr, pDEVBLK->ctce_rport + 1, strerror( HSO_errno ) );
++        }
++        else  // successfully connected to the other end
++        {
++            WRMSG( HHC05054, "I",  /* CTCE: Started outbound connection :%d -> %s:%d */
++                CTCX_DEVNUM( pDEVBLK ), pDEVBLK->ctce_lport, remaddr, pDEVBLK->ctce_rport + 1 );
++
++            // The even local port (form the config) is for writing
++            pDEVBLK->fd = parm.listenfd[0];
++        }
++    }
++
++    // Intervention required if the device file is not open
++    if( ( ( pDEVBLK->fd < 0 ) || ( pDEVBLK->ctcefd < 0 ) ) &&
++        !IS_CCW_SENSE( bCode ) &&
++        !IS_CCW_CONTROL( bCode ) )
++    {
++        pDEVBLK->sense[0] = SENSE_IR;
++        *pUnitStat = CSW_CE | CSW_DE | CSW_UC;
++        return;
++    }
++
++    // Changes to DEVBLK are lock protected as the CTCE_RecvThread
++    // might update as well, but, due to the way actually existing
++    // software uses CTC devices, this may not be needed at all.
++    obtain_lock( &pDEVBLK->lock );
++
++    // Copy control command byte in x command register
++    pDEVBLK->ctcexCmd = bCode;
++
++    // A valid Set Extended Mode (SEM) command will have an immediate
++    // effect so that it can from then on be handled as a NOP command.
++    // Valid in this context means x-state Available and y-state
++    // not in Working(D) with Control, Read or Write (CRW).
++    // Please note that the Basic to Extended mode switch influences
++    // the CTCS FSM table indexing which is why this is done up front.
++    // So we set Extended mode and enforce Available x-state.
++    if( IS_CTCE_CCW_SEM( pDEVBLK->ctcexCmd ) &&
++        IS_CTCE_YAV( pDEVBLK->ctcexState   ) &&
++       !IS_CTCE_CRW( pDEVBLK->ctceyState   ) )
++    {
++        pDEVBLK->ctcxmode = 1;
++        SET_CTCE_YAV( pDEVBLK->ctcexState );
++    }
++
++    // The new X-state and transition actions are derived from the FSM table.
++    CTCE_Info.state_new   = CTCE_NEW_X_STATE( pDEVBLK->ctcexCmd );
++    CTCE_Info.actions     = CTCE_Fsm[CTCE_Cmd[pDEVBLK->ctcexCmd]][CTCE_X_STATE_FSM_IDX( pDEVBLK->ctceyState )].actions;
++    CTCE_Info.x_unit_stat = CTCE_Fsm[CTCE_Cmd[pDEVBLK->ctcexCmd]][CTCE_X_STATE_FSM_IDX( pDEVBLK->ctceyState )].x_unit_stat;
++
++    *pUnitStat            = CTCE_Fsm[CTCE_Cmd[pDEVBLK->ctcexCmd]][CTCE_X_STATE_FSM_IDX( pDEVBLK->ctceyState )].x_unit_stat;
++
++    // If a READ or READ_BACKWARD command is received whilst the WEOF
++    // bit is set then the sole case for a Unit Exception applies.
++    if( IS_CTCE_WEOF( pDEVBLK->ctcexState ) &&
++        IS_CTCE_CCW_RDA( pDEVBLK->ctcexCmd ) )
++    {
++        CLR_CTCE_WEOF( pDEVBLK->ctcexState );
++        *pResidual = 0;
++        *pUnitStat = CSW_CE | CSW_DE | CSW_UX;
++    }
++
++    // Otherwise in case the CTCE device is not busy actions may result.
++    else if( !( CTCE_Info.x_unit_stat & CSW_BUSY ) )
++    {
++        CLR_CTCE_WEOF( pDEVBLK->ctcexState );
++
++        // Process depending on the CCW command.
++        switch ( CTCE_Cmd[pDEVBLK->ctcexCmd] )
++        {
++
++        // Most of the CTCE commands processing (if any at all)
++        // takes place in CTCE_Send and CTCE_RECV down below.
++        case CTCE_PREPARE:
++        case CTCE_CONTROL:
++        case CTCE_READ:
++        case CTCE_WRITE:
++        case CTCE_READ_BACKWARD:
++        case CTCE_WRITE_END_OF_FILE:
++        case CTCE_NO_OPERATION:
++        case CTCE_SET_EXTENDED_MODE:
++            break;
++
++        case CTCE_SENSE_COMMAND_BYTE:
++
++            // In y-state available we return 0 otherwise the last y-side command.
++            *pIOBuf = ( IS_CTCE_YAV( pDEVBLK->ctceyState ) ) ?
++                0 : pDEVBLK->ctceyCmdSCB;
++            CTCE_Info.scb = *pIOBuf;
++            *pResidual = sCount - 1;
++            break;
++
++        case CTCE_SENSE_ADAPTER_STATE:
++
++            // Calculate residual byte count
++            iNum = ( sCount < pDEVBLK->numsense ) ?
++                sCount : pDEVBLK->numsense;
++            *pResidual = sCount - iNum;
++
++            // Copy device sense bytes to channel I/O buffer
++            memcpy( pIOBuf, pDEVBLK->sense, iNum );
++
++            // Clear the device sense bytes
++            memset( pDEVBLK->sense, 0, sizeof( pDEVBLK->sense ) );
++            break;
++
++        case CTCE_SENSE_ID:
++
++            // Calculate residual byte count
++            iNum = ( sCount < pDEVBLK->numdevid ) ?
++                sCount : pDEVBLK->numdevid;
++            *pResidual = sCount - iNum;
++
++            // Copy device identifier bytes to channel I/O buffer
++            memcpy( pIOBuf, pDEVBLK->devid, iNum );
++            break;
++
++        // Invalid commands
++        // (or never experienced / tested / supported ones)
++        case CTCE_SET_BASIC_MODE:
++        case CTCE_READ_CONFIG_DATA:
++        default:
++
++            // Signalling invalid commands using Unit Check with a
++            // Command Reject sense code for this CTCE device failed.
++            // (MVS results were a WAIT 064 RSN 9 during NIP.)
++            // An Interface Control Check would probably be needed but
++            // we do not know how to generate that, so we use SENSE_EC.
++            //
++            //    pDEVBLK->sense[0] = SENSE_CR;
++
++            pDEVBLK->sense[0] = SENSE_EC;
++            *pUnitStat        = CSW_CE | CSW_DE | CSW_UC;
++
++        } // switch ( CTCE_Cmd( pDEVBLK->ctcexCMD ) )
++
++        // In most cases we need to inform the other (y-)side so we SEND
++        // our command (and data) to the other side.  During this process
++        // and any response received, all other actions take place.
++        if( IS_CTCE_SEND( CTCE_Info.actions ) )
++        {
++            CTCE_Send( pDEVBLK, sCount, pIOBuf, pUnitStat, pResidual, &CTCE_Info );
++        }
++
++        // This (x-)side will leave the Not Ready state.
++        if( IS_CTCE_YNR( pDEVBLK->ctcexState ) )
++        {
++            SET_CTCE_YAV( pDEVBLK->ctcexState );
++        }
++
++    } // if( !( CTCE_Info.x_unit_stat & CSW_BUSY ) )
++
++    // We merge a Unit Check in case the Y state is Not Ready.
++    // But only when pUnitStat is still 0 or just Busy (no Attn).
++    if( IS_CTCE_YNR( pDEVBLK -> ctceyState ) &&
++        ( ( *pUnitStat & (~ CSW_BUSY ) ) == 0 ) )
++    {
++        *pUnitStat |= CSW_UC;
++        pDEVBLK->sense[0] = SENSE_IR;
++    }
++
++    // Produce a CTCE Trace logging if requested, noting that for the
++    // IS_CTCE_WAIT cases such a logging is produced prior to the WAIT,
++    // and CTCE_Recv will produce a logging for the matching command.
++    if( ( pDEVBLK->ccwtrace || pDEVBLK->ccwstep ) &&
++        ( !( IS_CTCE_WAIT( CTCE_Info.actions ) ) ||
++          !CTCE_Info.sent ) )
++    {
++        CTCE_Trace( pDEVBLK, sCount, CTCE_Info.sent ? CTCE_SND : CTCE_LCL,
++                    &CTCE_Info, pDEVBLK->buf, pUnitStat );
++    }
++
++    release_lock( &pDEVBLK->lock );
++}
++
++//
++// CTCE_Init
++//
++
++static int  CTCE_Init( DEVBLK *dev, int argc, char *argv[] )
++{
++    char           str[80];            // Thread name
++    int            mtu;                // MTU size (binary)
++    char*          listenp;            // Listening port number
++    char*          remotep;            // Destination port number
++    char*          mtusize;            // MTU size (characters)
++    char*          remaddr;            // Remote IP address
++    BYTE           c;                  // Character work area
++    TID            tid;                // Thread ID for server
++    int            ctceSmlBin;         // Small size (binary)
++    char*          ctceSmlChr;         // Small size (characters)
++    CTCE_PARMBLK   parm;               // Parameters for the server
++    CTCE_PARMBLK*  arg;                // used to pass parameters to the server thread
++    char           address[20]="";     // temp space for IP address
++    int            optval;             // Argument for setsockopt
++
++    dev->devtype = 0x3088;
++
++    dev->ctctype = CTC_CTCE;
++
++//  SetSIDInfo( dev, 0x3088, 0x08, 0x0000, 0x00 ); CTCA, Extended Mode
++//  SetSIDInfo( dev, 0x3088, 0x08, 0x0000, 0x01 ); CTCA, Basic    Mode
++//  SetSIDInfo( dev, 0x3088, 0x1F, 0x0000, 0x00 ); ESCON CTC, Extended Mode, i.e. SCTC
++//  SetSIDInfo( dev, 0x3088, 0x1F, 0x0000, 0x01 ); ESCON CTC, Basic    Mode, i.e. BCTC
++//  SetSIDInfo( dev, 0x3088, 0x1E, 0x0000, 0x00 ); FICON CTC
++//  SetSIDInfo( dev, 0x3088, 0x01, ...          ); P390 OSA emulation
++//  SetSIDInfo( dev, 0x3088, 0x60, ...          ); OSA/2 adapter
++//  SetSIDInfo( dev, 0x3088, 0x61, ...          ); CISCO 7206 CLAW protocol ESCON connected
++//  SetSIDInfo( dev, 0x3088, 0x62, ...          ); OSA/D device
++//  But the orignal CTCX_init had this :
++    SetSIDInfo( dev, 0x3088, 0x08, 0x3088, 0x01 );
++
++    dev->numsense = 2;
++
++    // A version 4 only feature ...
++    dev->excps = 0;
++
++    // The halt_device exit is established; in version 4 this is in DEVHND in the ctce_device_hndinfo.
++//  dev->halt_device = &CTCE_Halt;
++
++    // Mark both socket file descriptors as not yet connected.
++    dev->fd = -1;
++    dev->ctcefd = -1;
++
++    // Check for correct number of arguments
++    if( (argc < 3) && (argc > 5) )
++    {
++        WRMSG( HHC05055, "E",  /* CTCE: Incorrect number of parameters */
++            CTCX_DEVNUM( dev ) );
++        return -1;
++    }
++
++    // The first argument is the listening port number
++    // which for CTCE must be an even port number.
++    listenp = *argv++;
++
++    if( strlen( listenp ) > 5 ||
++        sscanf( listenp, "%u%c", &dev->ctce_lport, &c ) != 1 ||
++        dev->ctce_lport < 1024 || dev->ctce_lport > 65534 )
++    {
++        WRMSG( HHC05056, "E",  /* CTCE: Invalid port number: %s */
++            CTCX_DEVNUM( dev ), listenp );
++        return -1;
++    }
++    if( dev->ctce_lport % 2 )
++    {
++        WRMSG( HHC05057, "E",  /* CTCE: Local port number not even: %s */
++            CTCX_DEVNUM( dev ), listenp );
++        return -1;
++    }
++
++    // The second argument is the IP address or hostname of the
++    // remote side of the point-to-point link
++    remaddr = *argv++;
++
++    if( inet_aton( remaddr, &dev->ctce_ipaddr ) == 0 )
++    {
++        struct hostent *hp;
++
++        if( ( hp = gethostbyname( remaddr ) ) != NULL )
++        {
++            memcpy( &dev->ctce_ipaddr, hp->h_addr, hp->h_length );
++            strcpy( address, inet_ntoa( dev->ctce_ipaddr ) );
++            remaddr = address;
++        }
++        else
++        {
++            WRMSG( HHC05058, "E",  /* CTCE: Invalid IP address %s */
++                CTCX_DEVNUM( dev ), remaddr );
++            return -1;
++        }
++    }
++
++    // The third argument is the destination port number
++    // which for CTCE must be an even port number.
++    remotep = *argv++;
++
++    if( strlen( remotep ) > 5 ||
++        sscanf( remotep, "%u%c", &dev->ctce_rport, &c ) != 1 ||
++        dev->ctce_rport < 1024 || dev->ctce_rport > 65534 )
++    {
++        WRMSG( HHC05059, "E",  /* CTCE: Invalid port number: %s */
++            CTCX_DEVNUM( dev ), remotep );
++        return -1;
++    }
++    if( dev->ctce_rport % 2 )
++    {
++        WRMSG( HHC05060, "E",  /* CTCE: Remote port number not even: %s */
++            CTCX_DEVNUM( dev ), remotep );
++        return -1;
++    }
++
++    // Enhanced CTC default MTU bufsize is CTCE_MTU_MIN.
++    if( argc < 4 )
++    {
++        mtu = CTCE_MTU_MIN;
++    }
++    else
++    {
++
++        // The fourth argument is the maximum transmission unit (MTU) size
++        mtusize = *argv;
++
++        if( strlen( mtusize ) > 5 ||
++            sscanf( mtusize, "%u%c", &mtu, &c ) != 1 ||
++            mtu < CTCE_MTU_MIN || mtu > 65536 )
++        {
++            WRMSG( HHC05061, "E",  /* CTCE: Invalid MTU size %s, allowed range is %d to 65536 */
++                CTCX_DEVNUM( dev ), mtusize, CTCE_MTU_MIN );
++            return -1;
++        }
++    }
++
++    // Enhanced CTC only supports an optional 5th parameter,
++    // the Small MTU size, which defaults to the minimum size
++    // of the TCP/IP packets exchanged: CTCE_SOKPFX.
++    ctceSmlBin = sizeof(CTCE_SOKPFX);
++    if( argc == 5 )
++    {
++        ctceSmlChr = *(++argv);
++
++        if( strlen( ctceSmlChr ) > 5 ||
++            sscanf( ctceSmlChr, "%u%c", &ctceSmlBin, &c ) != 1 ||
++            ctceSmlBin < (int)sizeof(CTCE_SOKPFX) || ctceSmlBin > mtu )
++        {
++            ctceSmlBin = sizeof(CTCE_SOKPFX);
++            WRMSG( HHC05062, "W",  /* CTCE: Invalid Small MTU size %s ignored */
++                CTCX_DEVNUM( dev ), ctceSmlChr );
++        }
++    }
++    dev->ctceSndSml = ctceSmlBin;
++
++    // Set the device buffer size equal to the MTU size
++    dev->bufsize = mtu;
++
++    WRMSG( HHC05063, "I",  /* CTCE: Awaiting inbound connection :%d <- %s:%d */
++        CTCX_DEVNUM( dev ), dev->ctce_lport + 1, remaddr, dev->ctce_rport );
++
++    // Initialize the file descriptor for the socket connection
++    parm.listenfd[1] = socket(AF_INET, SOCK_STREAM, 0);
++    if( parm.listenfd[1] < 0 )
++    {
++        WRMSG( HHC05064, "E",  /* CTCE: Error creating socket: %s */
++            CTCX_DEVNUM( dev ), strerror( HSO_errno ) );
++        CTCX_Close( dev );
++        return -1;
++    }
++
++    // Allow previous instance of socket to be reused
++    optval = 1;
++    setsockopt(parm.listenfd[1], SOL_SOCKET, SO_REUSEADDR,
++        (GETSET_SOCKOPT_T*)&optval, sizeof(optval));
++
++    // set up the listening port
++    memset( &(parm.addr), 0, sizeof( parm.addr ) );
++
++    parm.addr.sin_family      = AF_INET;
++    parm.addr.sin_port        = htons(dev->ctce_lport + 1) ;
++    parm.addr.sin_addr.s_addr = htonl(INADDR_ANY);
++
++    if( bind( parm.listenfd[1],
++              ( struct sockaddr * )&parm.addr,
++              sizeof( parm.addr ) ) < 0 )
++    {
++        WRMSG( HHC05065, "E",  /* CTCE: Error binding to socket (port=%d): %s */
++            CTCX_DEVNUM( dev ), dev->ctce_lport + 1, strerror( HSO_errno ) );
++        CTCX_Close( dev );
++        return -1;
++    }
++
++    if( listen( parm.listenfd[1], 1 ) < 0 )
++    {
++        WRMSG( HHC05066, "E",  /* CTCE: Error on call to listen (port=%d): %s */
++            CTCX_DEVNUM( dev ), dev->ctce_lport + 1, strerror( HSO_errno ) );
++        CTCX_Close( dev );
++        return -1;
++    }
++
++    // we are listening, so create a thread to accept connection
++    arg = malloc( sizeof( CTCE_PARMBLK ) );
++    memcpy( arg, &parm, sizeof( parm ) );
++    arg->dev = dev;
++    snprintf( str, sizeof( str ), "CTCE %4.4X ListenThread", dev->devnum);
++    str[sizeof( str )-1]=0;
++    create_thread( &tid, JOINABLE, CTCE_ListenThread, arg, str );
++
++    // for cosmetics, since we are successfully serving,
++    // fill in some details for the panel.
++    // Also used for connection verification in CTCE_ListenThread.
++    // The other side's CTCE device number will be completed
++    // upon the first receive, we initialize here with dots.
++    sprintf( dev->filename, ".:....=%s:%d", remaddr, dev->ctce_rport );
++
++    // Enhanced CTC adapter intiialization for command register and CB.
++    dev->ctcexCmd = 0x00;
++    dev->ctceyCmd = 0x00;
++    dev->ctceyCmdSCB = 0x00;
++
++    // Enhanced CTC adapter sides are state-aware, with initial
++    // state (1) "Available" and (2) "Not Ready" as in column 6 in
++    // the table 2.13 in SA22-7203-00, i.e. we consider both
++    // sides being in state YNR. ALL Flags are cleared.
++    CLR_CTCE_ALLF( dev->ctcexState );
++    SET_CTCE_YNR ( dev->ctcexState );
++    CLR_CTCE_ALLF( dev->ctceyState );
++    SET_CTCE_YNR ( dev->ctceyState );
++
++    // Until we are successfully contacted by the other side,
++    // we mark the "other side Intervention Required".
++    dev->sense[0] = SENSE_IR;
++
++    // Initialize the 12 bits Send->Recv packet sequence ID with
++    // bits 13-12 of the CCUU devnum in bits 15-14, and
++    // bits 01-00 of the CCUU devnum in bits 13-12.  This helps
++    // distinguishing same-host traffic if the Send-Recv side
++    // CCUU's are sufficiently different (e.g. when under VM).
++    dev->ctcePktSeq = ((dev->devnum <<  2) & 0xC000) |
++                      ((dev->devnum << 12) & 0x3000) ;
++
++    // Initialize the CTC lock and condition used to signal
++    // reception of a command matching the dependent one.
++    initialize_lock( &dev->ctceEventLock );
++    initialize_condition( &dev->ctceEvent );
++
++    return 0;
++}
++
++//
++// CTCE_ListenThread
++//
++
++static void*  CTCE_ListenThread( void* argp )
++{
++    int          connfd;
++    socklen_t    servlen;
++    char         str[80];
++    CTCE_PARMBLK parm;
++    TID          tid2;               // Thread ID for read thread
++    int          rc;                 // Return code
++#if defined( CTCE_DISABLE_NAGLE )
++    int          optval;             // Argument for setsockopt
++#endif
++
++    // set up the parameters passed via create_thread
++    parm = *((CTCE_PARMBLK*) argp);
++    free( argp );
++
++    for( ; ; )
++    {
++        servlen = sizeof( parm.addr );
++
++        // await a connection
++        connfd = accept( parm.listenfd[1],
++                         (struct sockaddr *)&parm.addr,
++                         &servlen );
++
++        sprintf( str, "%s:%d",
++                 inet_ntoa( parm.addr.sin_addr ),
++                 ntohs( parm.addr.sin_port ) );
++
++        if( strcmp( str, parm.dev->filename + 7 ) != 0 )
++        {
++            WRMSG( HHC05067, "E",  /* CTCE: Inconsistent config=%s+%d, connecting client=%s */
++                CTCX_DEVNUM( parm.dev ), parm.dev->filename + 7, 1, str);
++            close_socket( connfd );
++        }
++        else
++        {
++
++#if defined( CTCE_DISABLE_NAGLE )
++            optval = 1;
++            rc = setsockopt(parm.listenfd[1], IPPROTO_TCP, TCP_NODELAY,
++                (char*)&optval, sizeof( optval ) );
++            if( rc < 0 )
++            {
++                WRMSG( HHC05068, "E",  /* CTCE: TCP_NODELAY error for socket (port %d): %s */
++                    CTCX_DEVNUM( parm.dev ), parm.dev->ctce_lport + 1, strerror( HSO_errno ) );
++                close_socket( connfd );
++            }
++#endif
++
++            // The next odd local port is for reading
++            parm.dev->ctcefd = connfd;
++
++            // This side is ready to start receiving and sending so we
++            // start a read thread to do the receiving part;
++            snprintf( str, sizeof(str), "CTCE %04X RecvThread",
++                parm.dev->devnum );
++            str[sizeof(str)-1]=0;
++            rc = create_thread( &tid2, JOINABLE, CTCE_RecvThread, parm.dev, str );
++            if( rc != 0 )
++            {
++                WRMSG( HHC05069, "E",  /* CTCE: create_thread error: %s */
++                    CTCX_DEVNUM( parm.dev ), strerror(errno));
++            }
++            else
++            {
++                WRMSG( HHC05070, "E",  /* CTCE: Accepted inbound connection :%d <- %s (bufsize=%d,%d) */
++                    CTCX_DEVNUM( parm.dev ), parm.dev->ctce_lport + 1,
++                    parm.dev->filename + 7, parm.dev->bufsize, parm.dev->ctceSndSml );
++            }
++        }
++
++        // Ok, so having done that we're going to loop back to the
++        // accept().  This was meant to handle the connection failing
++        // at the other end; this end will be ready to accept another
++        // connection.  Although this will happen, I'm sure you can
++        // see the possibility for bad things to occur (eg if another
++        // Hercules tries to connect).  This will also be fixed RSN.
++    }
++
++    UNREACHABLE_CODE();
++    return(0);
++}
++
++//
++// CTCE_Send
++//
++
++static void   CTCE_Send( DEVBLK* pDEVBLK,   U32        sCount,
++                         BYTE*   pIOBuf,    BYTE*      pUnitStat,
++                         U32*    pResidual, CTCE_INFO* pCTCE_Info )
++{
++    CTCE_SOKPFX   *pSokBuf;                 // overlay for buf inside DEVBLK
++    int            rc;                      // Return code
++
++    if( ! IS_CTCE_SEND( pCTCE_Info->actions ) )
++    {
++        WRMSG( HHC05071, "S",  /* CTCE: SEND status incorrectly encoded ! */
++            CTCX_DEVNUM( pDEVBLK ) );
++    }
++
++    // We only ever Send if the sockets are connected.
++    if( ( pDEVBLK->fd < 0 ) || ( pDEVBLK->ctcefd < 0 ) )
++    {
++        WRMSG( HHC05072, "S",  /* CTCE: Not all sockets connected: send=%d, receive=%d */
++            CTCX_DEVNUM( pDEVBLK ), pDEVBLK->fd, pDEVBLK->ctcefd );
++        *pUnitStat = 0;
++        return ;
++    }
++    pCTCE_Info->sent = 1;
++
++    pDEVBLK->ctcexState = CTCE_NEW_X_STATE( pDEVBLK->ctcexCmd );
++    pDEVBLK->ctce_UnitStat = *pUnitStat;
++
++    pSokBuf = (CTCE_SOKPFX*) pDEVBLK->buf;
++    pSokBuf->CmdReg = pDEVBLK->ctcexCmd;
++    pSokBuf->FsmSta = pDEVBLK->ctcexState;
++    pSokBuf->sCount = sCount;
++    pSokBuf->PktSeq = ++pDEVBLK->ctcePktSeq;
++    pSokBuf->SndLen = pDEVBLK->ctceSndSml;
++    pSokBuf->DevNum = pDEVBLK->devnum;
++    pSokBuf->ssid   = pDEVBLK->ssid;
++
++    // Only a (non-WEOF) write command data includes sending the IOBuf.
++    if( IS_CTCE_CCW_WRT( pDEVBLK->ctcexCmd ) )
++    {
++        memcpy( pDEVBLK->buf + sizeof(CTCE_SOKPFX), pIOBuf, sCount );
++
++        // Increase the SndLen if the sCount is too large.
++        if( pSokBuf->SndLen < ( sCount + sizeof(CTCE_SOKPFX) ) )
++            pSokBuf->SndLen = ( sCount + sizeof(CTCE_SOKPFX) );
++
++        // Write Data.
++        if( pDEVBLK->ccwstep )
++            packet_trace( pIOBuf, sCount, '>' );
++
++        // If bufsize (init from the MTU parameter) is not large enough
++        // then we will have a severe error as the CTC will not connect.
++        if( pDEVBLK->bufsize < pSokBuf->SndLen )
++        {
++            WRMSG( HHC05073, "S",  /* CTCE: bufsize parameter %d is too small; increase at least to %d */
++                CTCX_DEVNUM( pDEVBLK ), pDEVBLK->bufsize, pSokBuf->SndLen );
++        }
++    }
++    pCTCE_Info->sok_buf_len = pSokBuf->SndLen;
++
++    // Write all of this to the other (y-)side.
++    rc = write_socket( pDEVBLK->fd, pDEVBLK->buf, pSokBuf->SndLen );
++
++    if( rc < 0 )
++    {
++        WRMSG( HHC05074, "E",  /* CTCE: Error writing to %s: %s */
++            CTCX_DEVNUM( pDEVBLK ), CTCE_FILENAME, strerror( HSO_errno ) );
++
++        pDEVBLK->sense[0] = SENSE_EC;
++        *pUnitStat        = CSW_CE | CSW_DE | CSW_UC;
++        return;
++    }
++
++    // If this command is a matching one for the other (y-)side
++    // Working(D) state, then that (y-)side becomes available.
++    if IS_CTCE_MATCH( pCTCE_Info->actions )
++    {
++        SET_CTCE_YAV( pDEVBLK->ctceyState );
++    }
++
++    // If we received a command that is going to put our (x-)side
++    // in a Working(D) state, then we will need to wait until a
++    // matching command arrives from the other (y-)side.  The WAIT
++    // timeout is chosen to be long enough to not timeout over periods
++    // if inactivity; we experienced up to 6 secs, so we set it to 60.
++    if( IS_CTCE_WAIT( pCTCE_Info->actions ) )
++    {
++
++        // Produce a CTCE Trace logging if requested.
++        if( pDEVBLK->ccwtrace || pDEVBLK->ccwstep )
++        {
++            CTCE_Trace( pDEVBLK, sCount, CTCE_SND, pCTCE_Info, pDEVBLK->buf, pUnitStat );
++        }
++
++        obtain_lock( &pDEVBLK->ctceEventLock );
++        release_lock( &pDEVBLK->lock );
++
++        pCTCE_Info->wait_rc = timed_wait_condition_relative_usecs(
++            &pDEVBLK->ctceEvent,
++            &pDEVBLK->ctceEventLock,
++            60000000,
++            NULL );
++
++        obtain_lock( &pDEVBLK->lock );
++        release_lock( &pDEVBLK->ctceEventLock );
++
++        // Trace the non-zero WAIT RC (e.g. timeout, RC=138 (windows) or 110 (unix)).
++        if( pCTCE_Info->wait_rc != 0 )
++        {
++            CTCE_Trace( pDEVBLK, sCount, CTCE_SND, pCTCE_Info, pDEVBLK->buf, pUnitStat );
++        }
++
++        // First we check for Halt or Clear Subchannel
++        if( pCTCE_Info->wait_rc == ETIMEDOUT || pCTCE_Info->wait_rc == EINTR )
++        {
++            // check for halt condition
++            if( pDEVBLK->scsw.flag2 & SCSW2_FC_HALT ||
++                pDEVBLK->scsw.flag2 & SCSW2_FC_CLEAR )
++            {
++                if( pDEVBLK->ccwtrace || pDEVBLK->ccwstep )
++                {
++                    WRMSG( HHC05075, "I",  /* CTCE: Halt or Clear Recognized */
++                        CTCX_DEVNUM( pDEVBLK ) );
++                }
++
++//???           *pUnitStat = CSW_CE | CSW_DE;
++                *pUnitStat = 0;
++                *pResidual = sCount;
++            }
++
++            // Other timeouts or errors should not occur.
++            else
++            {
++                *pUnitStat = CSW_CE | CSW_DE | CSW_UC | CSW_SM;
++                pDEVBLK->sense[0] = 0;
++            }
++            return;
++        }
++
++        // A WRITE EOF command from the other side will have resulted
++        // in the WEOF flag being set.  If this was a matching command
++        // for a READ then unit exception needs to be included.
++        else if( IS_CTCE_WEOF( pDEVBLK->ctcexState ) &&
++                 IS_CTCE_CCW_RDA( pDEVBLK->ctcexCmd ) )
++        {
++            *pResidual = 0;
++            *pUnitStat  = CSW_CE | CSW_DE | CSW_UX;
++
++            // Produce a trace logging if requested.
++            if( pDEVBLK->ccwtrace || pDEVBLK->ccwstep )
++            {
++                CTCE_Trace( pDEVBLK, sCount, CTCE_SND, pCTCE_Info, pDEVBLK->buf, pUnitStat );
++            }
++            return;
++        }
++    } // if( IS_CTCE_WAIT( pCTCE_Info->actions ) )
++
++    // In the non-WAIT case the final UnitStat is always
++    // CE + DE provided the y-state is not Not_Ready.
++    else if( !IS_CTCE_YNR( pDEVBLK -> ctceyState ) )
++    {
++        pDEVBLK->ctce_UnitStat = CSW_CE | CSW_DE;
++    }
++
++    // If the command (by now matched) was a READ command, then the
++    // other (y-)side data is available in the DEVBLK buf, so we
++    // can copy it into the IO channel buffer and compute residual.
++    if( IS_CTCE_CCW_RED( pDEVBLK->ctcexCmd ) )
++    {
++
++        // The actual length of data transferred is the minimum of
++        // the current READ sCount, and the original WRITE sCount
++        // which is recorded immediately following the CTCE_SOKPFX.
++        pSokBuf->sCount =
++            ( sCount <= *(U16*)( pDEVBLK->buf + sizeof(CTCE_SOKPFX) ) )
++            ? sCount :  *(U16*)( pDEVBLK->buf + sizeof(CTCE_SOKPFX) );
++
++        // Immediately followed by the WRITE data previously received.
++        memcpy( pIOBuf, pDEVBLK->buf + sizeof(CTCE_SOKPFX) + sizeof(pSokBuf->sCount),
++            pSokBuf->sCount ) ;
++        *pResidual = sCount - pSokBuf->sCount;
++    }
++    else
++    {
++        *pResidual = 0;
++    }
++
++    // The final UnitStat may have been amended by CTCE_Recv like when
++    // it received a matching command (typically resulting in CE + DE).
++    // We need to merge this.
++    *pUnitStat |= pDEVBLK->ctce_UnitStat;
++    pDEVBLK->ctce_UnitStat = 0;
++
++    return;
++}
++
++//
++// CTCE_RecvThread
++//
++
++static void*  CTCE_RecvThread( void* argp )
++{
++    DEVBLK        *pDEVBLK = (DEVBLK*) argp;     // device block pointer
++    CTCE_SOKPFX   *pSokBuf;                      // overlay for buf inside DEVBLK
++    CTCE_INFO      CTCE_Info;                    // CTCE information (also for tracing)
++    int            iLength  = 0;
++    BYTE          *buf;                          //-> Device recv data buffer
++    U64            ctcePktCnt = 0;               // Recvd Packet Count
++    U64            ctceBytCnt = 0;               // Recvd Byte Count
++    BYTE           ctce_dev_attn_UnitStat;       // Parameter for device_attention
++    int            i = 0;                        // temporary variable
++
++    // When the receiver thread is (re-)started, the CTCE devblk is (re-)initialized
++    obtain_lock( &pDEVBLK->lock );
++
++    // Enhanced CTC adapter intiialization for command register and CB
++    pDEVBLK->ctcexCmd = 0x00;
++    pDEVBLK->ctceyCmd = 0x00;
++    pDEVBLK->ctceyCmdSCB = 0x00;
++
++    // CTCE DEVBLK (re-)initialisation completed.
++    release_lock( &pDEVBLK->lock );
++
++    // Avoid having to lock the DEVBLK whilst awaiting data to arrive via read_socket
++    buf = malloc( pDEVBLK->bufsize );
++    pSokBuf = (CTCE_SOKPFX*)buf;
++
++    // Initialise our CTCE_Info as needed.
++    CTCE_Info.de_ready_attn_rc = 0;
++    CTCE_Info.working_attn_rc  = 0;
++    CTCE_Info.busy_waits       = 0;
++
++    // This thread will loop until we receive a zero-length packet caused by CTCX_close from the other side.
++    for( ; ; )
++    {
++        // We read whatever the other (y-)side of the CTC has sent us,
++        // which by now won't block until the complete bufsize is received.
++        iLength = read_socket( pDEVBLK->ctcefd, buf, pDEVBLK->ctceSndSml );
++
++        // Followed by the receiving the rest if the default SndLen was too small.
++        if( ( pDEVBLK->ctceSndSml < pSokBuf->SndLen ) && ( iLength != 0 ) )
++            iLength += read_socket( pDEVBLK->ctcefd, buf + pDEVBLK->ctceSndSml,
++                pSokBuf->SndLen - pDEVBLK->ctceSndSml );
++
++        // In case we are closing down this thread can end.
++        if( iLength == 0 )
++        {
++
++            // We report some statistics.
++            WRMSG( HHC05076, "I",  /* CTCE: Connection closed; %"PRIu64" MB received in %"PRIu64" packets from %s */
++                CTCX_DEVNUM( pDEVBLK ), ctceBytCnt >> SHIFT_MEGABYTE , ctcePktCnt, CTCE_FILENAME );
++
++            // And this receiver socket can now be closed.
++            close_socket( pDEVBLK->ctcefd );
++            pDEVBLK->ctcefd = -1;
++
++            free( buf );
++            return NULL;    // make compiler happy
++        }
++
++        // Changes to DEVBLK must be lock protected as other threads might update as well.
++        obtain_lock(&pDEVBLK->lock);
++
++        // Check for other error condition
++        if( iLength < 0 )
++        {
++            WRMSG( HHC05077, "E",  /* CTCE: Error reading from %s: %s */
++                CTCX_DEVNUM( pDEVBLK ), CTCE_FILENAME, strerror ( HSO_errno ) );
++            pDEVBLK->sense[0] = SENSE_EC;
++            pDEVBLK->scsw.unitstat = CSW_CE | CSW_DE | CSW_UC;
++        }
++        else
++        {
++
++            // Upon the first recv we will fill out the devnum in the filename.
++            if( pDEVBLK->filename[2] == '.' )
++            {
++                snprintf( pDEVBLK->filename, 7, "%1d:%04X",
++                    SSID_TO_LCSS( pSokBuf->ssid ), pSokBuf->DevNum );
++                pDEVBLK->filename[6] = '=';
++            }
++
++            // Update the Receive statistics counters.
++            ctcePktCnt += 1 ;
++            ctceBytCnt += iLength ;
++
++            // Initialise the device_attention parameter.
++            ctce_dev_attn_UnitStat = 0;
++
++            // Save the previous CTCE states,
++            // our (x-)side as well as the other (y-)side.
++            CTCE_Info.state_x_prev = pDEVBLK->ctcexState;
++            CTCE_Info.state_y_prev = pDEVBLK->ctceyState;
++
++            // Set extended mode from the other side also applies to this side.
++            if( IS_CTCE_CCW_SEM( pDEVBLK->ctceyCmd ) )
++            {
++                pDEVBLK->ctcxmode = 1;
++            }
++
++            // The command received from the other (y-)side may cause a
++            // state transition on our (x-)side, as well as some actions.
++            // Both depend on our current (x-)side state and are encoded
++            // within the FSM table.
++            CTCE_Info.actions = CTCE_Fsm[CTCE_Cmd[pSokBuf->CmdReg]]
++                [CTCE_STATE( pDEVBLK->ctcexState )].actions;
++            CTCE_Info.state_new = CTCE_NEW_Y_STATE( pSokBuf->CmdReg );
++
++            // Device-End status indicating ready will be presented
++            // if the y-side has just now become ready.
++            CTCE_Info.de_ready = ( IS_CTCE_YNR( pDEVBLK->ctceyState ) &&
++                                  !IS_CTCE_YNR( pSokBuf->FsmSta ) ) ? 1 : 0;
++
++            pDEVBLK->ctceyState = pSokBuf->FsmSta;
++            pDEVBLK->ctceyCmd =  pSokBuf->CmdReg;
++            pDEVBLK->ctceyCmdSCB = pSokBuf->CmdReg;
++
++            // Only if the other (y-)side sent us a write command will
++            // we copy the socket buffer into the device buffer.
++            if( IS_CTCE_CCW_WRT( pDEVBLK->ctceyCmd ) )
++            {
++
++                // We retain the sCount of this WRITE command for later
++                // comparison against the matching READ command, ahead
++                // of the data itself following CTCE_SOKPFX.
++                *(U16*)( pDEVBLK->buf + sizeof(CTCE_SOKPFX) ) = pSokBuf->sCount ;
++
++                memcpy( pDEVBLK->buf + sizeof(CTCE_SOKPFX) + sizeof(pSokBuf->sCount) ,
++                    buf + sizeof(CTCE_SOKPFX), pSokBuf->sCount );
++            }
++
++            // If the other side sent us a WRITE EOF command
++            // then we just set the WEOF flag on our side.
++            else if( IS_CTCE_CCW_WEF( pDEVBLK->ctceyCmd ) )
++            {
++                SET_CTCE_WEOF( pDEVBLK->ctcexState );
++            }
++
++            // If the other side sent us a READ or READBK command whilst the
++            // previous command at our (x-) side was a WRITE EOF command then
++            // the other side will have generated a Unit Exception to the WEOF
++            // setting, effectively discarding that READ command.  We therefore
++            // ignore this READ command, but we need to set the resulting
++            // state to Available.  We clear the Wait + Attention actions.
++            else if( IS_CTCE_CCW_RDA( pDEVBLK->ctceyCmd ) &&
++                     IS_CTCE_CCW_WEF( pDEVBLK->ctcexCmd ) &&
++                     IS_CTCE_ATTN( CTCE_Info.actions ) )
++            {
++                SET_CTCE_YAV( pDEVBLK->ctceyState );
++                CLR_CTCE_WAIT( CTCE_Info.actions );
++                CLR_CTCE_ATTN( CTCE_Info.actions );
++            }
++
++            // If the other (y-)side sent us a matching command for our
++            // (x-)side Working(D) state, then we need to signal that
++            // condition so that CTCE_Send no longer needs to wait.
++            if( IS_CTCE_MATCH( CTCE_Info.actions ) )
++            {
++                obtain_lock( &pDEVBLK->ctceEventLock );
++                signal_condition( &pDEVBLK->ctceEvent );
++                release_lock( &pDEVBLK->ctceEventLock );
++
++                // Both side return to the available state.
++                SET_CTCE_YAV( pDEVBLK->ctcexState );
++                SET_CTCE_YAV( pDEVBLK->ctceyState );
++
++                // All matching commands result in a final UnitStat
++                // CE + DE stat at the local device end, with one
++                // exception: when the matching is for a write command
++                // in BASE mode only, then a zero UnitStat is needed.
++                // This latter condition may be caused by us waiting
++                // for the matching READ to arrive wihtout generating
++                // an initial UnitStat=0 response; but the condition
++                // only applies to base mode (e.g. MVS GRS).
++                if( ( pDEVBLK->ctcxmode == 1 ) ||
++                   !( IS_CTCE_CCW_RDA( pDEVBLK->ctceyCmd ) ) )
++                {
++                    pDEVBLK->ctce_UnitStat |= CSW_CE | CSW_DE;
++                }
++            } // if( IS_CTCE_MATCH( CTCE_Info.actions ) )
++
++            // If the other (y-)side sent us a Device-End status
++            // indicating Ready then this has to be presented on this side.
++            else if( CTCE_Info.de_ready )
++            {
++                release_lock( &pDEVBLK->lock );
++                ctce_dev_attn_UnitStat |= CSW_DE;
++                CTCE_Info.de_ready_attn_rc = device_attention( pDEVBLK, CSW_DE );
++                obtain_lock( &pDEVBLK->lock );
++
++                // Reset sense byte 0 bits 1 and 7.
++                pDEVBLK->sense[0] &= ~( SENSE_IR | SENSE_OC );
++            }
++
++            // If the other (y-)side sent us a command that may require
++            // us to signal attention then we will do so provided no
++            // program chain is in progress (SA22-7203-00, item 2.1.1,
++            // second paragraph).  Ignoring this would yield RC=1,
++            // which indicates a busy or status pending condition.
++
++            if( ( IS_CTCE_ATTN( CTCE_Info.actions ) ) &&
++                ( !pDEVBLK->busy || ( pDEVBLK->ctcxmode == 0 ) ) )
++            {
++
++                // Only for basic mode CTC's (e.g. MVS GRS) do we need
++                // to ensure that CTCE_Send receives any matching CCW
++                // command signal and finishes the CCW in progress
++                // before we now signal ATTN.  An easy but not so
++                // elegant method is a short wait until this side
++                // is no longer busy or in pending status.  We wait
++                // for up to 10 seconds (busy_waits==20), but have
++                // only (once) experienced 10 msec (busy_waits=10).
++                // This process is necessary, but only very seldom so.
++                if( pDEVBLK->ctcxmode == 0 )
++                {
++                    i = 10;
++                    for( CTCE_Info.busy_waits = 0;
++                         ( pDEVBLK->ctcxmode == 0    ) &&
++                         ( CTCE_Info.busy_waits < 20 ) &&
++                         ( pDEVBLK->busy        ||
++                           pDEVBLK->pending     ||
++                           pDEVBLK->pcipending  ||
++                           pDEVBLK->attnpending ||
++                           pDEVBLK->scsw.flag3 & SCSW3_SC_PEND );
++                         CTCE_Info.busy_waits++ )
++                    {
++                        release_lock( &pDEVBLK->lock );
++                        usleep(i);
++                        i = i * 2;
++                        obtain_lock( &pDEVBLK->lock );
++                    }
++                }
++
++                // The release and re-obtain lock is only needed
++                // because device_attention also obtains and releases
++                // the lock, which under Unix causes HHCCP017I eventually.
++                release_lock( &pDEVBLK->lock );
++                ctce_dev_attn_UnitStat |= CSW_ATTN;
++                CTCE_Info.working_attn_rc = device_attention( pDEVBLK, CSW_ATTN );
++                obtain_lock( &pDEVBLK->lock );
++
++                // WAIT ATTN Non-zero RC will be reported but only if
++                // RC=1 remains after a limited number of retries.
++                // (This was only experienced during MVS GRS CCW
++                // programs, never duing XCF CCW programs, but has not
++                // been experienced anymore since the introduction of
++                // the busy_waits process directly above.)
++                for( i = 0; ( CTCE_Info.working_attn_rc == 1 ) && ( i < 10 ); i++ )
++                {
++                    release_lock( &pDEVBLK->lock );
++                    usleep(1000);
++                    CTCE_Info.working_attn_rc = device_attention( pDEVBLK, CSW_ATTN );
++                    obtain_lock( &pDEVBLK->lock );
++                }
++                CTCE_Info.working_attn_retry = i;
++            } // if( IS_CTCE_ATTN( CTCE_Info.actions ) ...
++
++            // Merge any device_attention UnitStat into the final one.
++            pDEVBLK->ctce_UnitStat |= ctce_dev_attn_UnitStat;
++
++            // Produce a CTCE Trace logging if requested.
++            if( pDEVBLK->ccwtrace || pDEVBLK->ccwstep
++                || ( CTCE_Info.de_ready_attn_rc != 0 )
++                || ( CTCE_Info.working_attn_rc  != 0 )
++                || ( CTCE_Info.busy_waits       >= 3 ) )
++            {
++                CTCE_Info.sok_buf_len = iLength;
++                CTCE_Trace( pDEVBLK, pSokBuf->sCount, CTCE_RCV, &CTCE_Info, buf, &pDEVBLK->ctce_UnitStat );
++            }
++            CTCE_Info.de_ready_attn_rc = 0;
++            CTCE_Info.working_attn_rc  = 0;
++            CTCE_Info.busy_waits       = 0;
++        }
++
++        release_lock( &pDEVBLK->lock );
++    }
++}
++
++//
++// CTCE_Halt -- Halt device for CTCE adapter
++//
++
++static void   CTCE_Halt( DEVBLK* pDEVBLK )
++{
++
++    // obtain_lock( &pDEVBLK->lock ) already carried out by caller in channel.c
++    if( pDEVBLK->ccwtrace || pDEVBLK->ccwstep )
++    {
++        WRMSG( HHC05078, "I",  /* CTCE: -| Halt x=%s y=%s */
++            CTCX_DEVNUM( pDEVBLK ),
++            CTCE_StaStr[pDEVBLK->ctcexState & 0x07],
++            CTCE_StaStr[pDEVBLK->ctceyState & 0x07] );
++    }
++
++    // Halt device for a CTCE device is a selective reset,
++    // requiring our (x-)side to cancel any Working(D) wait state
++    // if needed, and to return to the not ready state.
++    if( IS_CTCE_YWK( pDEVBLK->ctcexState ) )
++    {
++        obtain_lock( &pDEVBLK->ctceEventLock );
++        signal_condition( &pDEVBLK->ctceEvent );
++        release_lock( &pDEVBLK->ctceEventLock );
++        CLR_CTCE_ALLF(pDEVBLK->ctcexState);
++        SET_CTCE_YNR(pDEVBLK->ctcexState);
++    }
++}
++
++// ---------------------------------------------------------------------
++// CTCE_ChkSum
++// ---------------------------------------------------------------------
++//
++// Subroutine to compute a XOR-based checksum for use in debug messages.
++//
++
++U32 CTCE_ChkSum(const BYTE* pBuf, const U16 BufLen)
++{
++    U32            i;
++    U32            XORChk = 0;                   // XOR of buffer for checking
++    BYTE          *pXOR = (BYTE*)&XORChk;        // -> XORChk
++
++
++    // We initialize the result with the buffer length so that
++    // different length zero buffers yield a different checksum.
++    XORChk = BufLen;
++    for(i = 0; i < BufLen; i++)
++    {
++        if( (i % 4) == 0 )
++        {
++           pXOR = (BYTE*)&XORChk;
++        }
++        *pXOR++ ^= *pBuf++;
++    }
++    return XORChk;
++}
++
++// ---------------------------------------------------------------------
++// CTCE_Trace
++// ---------------------------------------------------------------------
++//
++// Subroutine to produce a CTCE trace logging when requested.
++//
++
++void            CTCE_Trace( const DEVBLK*             pDEVBLK,
++                            const U32                 sCount,
++                            const enum CTCE_Cmd_Xfr   eCTCE_Cmd_Xfr,
++                            const CTCE_INFO*          pCTCE_Info,
++                            const BYTE*               pCTCE_Buf,
++                            const BYTE*               pUnitStat )
++{
++    static char *CTCE_XfrStr[3] = {
++        "-|" ,  //  0 = CTCE_LCL
++        "->" ,  //  1 = CTCE_SND
++        "<-"    //  2 = CTCE_RCV
++    };
++    BYTE           ctce_Cmd;                   // CTCE command being traced
++    BYTE           ctce_PktSeq;                // Packet Sequence number traced
++    CTCE_SOKPFX   *pSokBuf;                    // overlay for buf inside DEVBLK
++    BYTE           ctce_state_verify;          // CTCE state to be verfified
++    char           ctce_state_l_xy[2];         // CTCE X+Y states, left
++    char           ctce_state_r_xy[2];         // CTCE X+Y stares, right
++    char           ctce_trace_stat[16];        // to contain " Stat=.."
++    char           ctce_trace_xtra[256];       // to contain extra info when tracing
++    char           ctce_trace_xtra_temp[256];  // temporary work area for the above
++
++    pSokBuf = (CTCE_SOKPFX*)pCTCE_Buf;
++
++    // Report on the device status.
++    if( ( eCTCE_Cmd_Xfr != CTCE_RCV ) || ( *pUnitStat != 0 ) ||
++        ( IS_CTCE_MATCH( pCTCE_Info->actions ) ) )
++    {
++        snprintf( ctce_trace_stat, sizeof( ctce_trace_stat ),
++            "Stat=%02X", *pUnitStat );
++    }
++    else
++    {
++        snprintf( ctce_trace_stat, sizeof( ctce_trace_stat ),
++            "       " );
++    }
++
++    ctce_trace_xtra[0] = '\0' ;
++
++    // The other side's entering a "Working" state may
++    // require an Attention or not, which will be shown.
++    // Please note that the CTCE_ACTIONS_PRT macro in
++    // that case will show "ATTN" at the rightmost end.
++    if( IS_CTCE_ATTN( pCTCE_Info->actions ) && ( eCTCE_Cmd_Xfr == CTCE_RCV ) )
++    {
++        if( pDEVBLK->busy && ( pDEVBLK->ctcxmode == 1 ) )
++        {
++            strlcat( ctce_trace_xtra, "->NONE", sizeof( ctce_trace_xtra ) );
++        }
++        else
++        {
++            snprintf( ctce_trace_xtra_temp, sizeof( ctce_trace_xtra_temp ),
++                "->RC=%d", pCTCE_Info->working_attn_rc );
++            strlcat( ctce_trace_xtra, ctce_trace_xtra_temp, sizeof( ctce_trace_xtra ) );
++            if( pCTCE_Info->working_attn_retry > 0 )
++            {
++                snprintf( ctce_trace_xtra_temp, sizeof( ctce_trace_xtra_temp ),
++                    "(retry=%d)", pCTCE_Info->working_attn_retry );
++                strlcat( ctce_trace_xtra, ctce_trace_xtra_temp, sizeof( ctce_trace_xtra ) );
++            }
++        }
++    }
++
++    // The other side's "DE Ready" signalling to be shown.
++    if( pCTCE_Info->de_ready )
++    {
++        snprintf( ctce_trace_xtra_temp, sizeof( ctce_trace_xtra_temp ),
++            " DE_READY->RC=%d",pCTCE_Info->de_ready_attn_rc );
++        strlcat( ctce_trace_xtra, ctce_trace_xtra_temp, sizeof( ctce_trace_xtra ) );
++    }
++
++    // "WEOF" means that the "Write End of File" bit is or was set.
++    // "WEOF->SET" means it just got set right now, in which case
++    // "WEOF->SET->UX" means an Unit Exception (UX) will follow because
++    // it got set because of a WEOF command matching a Read command
++    // (which actually will clear the WEOF immediately thereafter).
++    // "WEOF->CLR" indicates the WEOF bit just got reset.
++    if(  IS_CTCE_WEOF( pCTCE_Info->state_x_prev ) ||
++         IS_CTCE_WEOF( pDEVBLK->ctcexState      ) )
++    {
++        strlcat( ctce_trace_xtra, " WEOF", sizeof( ctce_trace_xtra ) );
++    }
++    if( !IS_CTCE_WEOF( pCTCE_Info->state_x_prev ) &&
++         IS_CTCE_WEOF( pDEVBLK->ctcexState      ) )
++    {
++        strlcat( ctce_trace_xtra, "->SET", sizeof( ctce_trace_xtra ) );
++        if( IS_CTCE_MATCH( pCTCE_Info->actions ) )
++        {
++            strlcat( ctce_trace_xtra, "->UX", sizeof( ctce_trace_xtra ) );
++        }
++    }
++    if(  IS_CTCE_WEOF( pCTCE_Info->state_x_prev ) &&
++        !IS_CTCE_WEOF( pDEVBLK->ctcexState      ) )
++    {
++        strlcat( ctce_trace_xtra, "->CLR", sizeof( ctce_trace_xtra ) );
++    }
++
++    // The source for reporting dependings on the Command X-fer
++    // direction.  The CTCE states are reported in lower case,
++    // but a changed state is highlighted in upper case.
++    if( eCTCE_Cmd_Xfr == CTCE_RCV )
++    {
++        ctce_Cmd    = pDEVBLK->ctceyCmd;
++        ctce_PktSeq = pSokBuf->PktSeq;
++        ctce_state_r_xy[0] = 32 + *CTCE_StaStr[CTCE_STATE( pCTCE_Info->state_x_prev )];
++        ctce_state_r_xy[1] = 32 + *CTCE_StaStr[CTCE_STATE( pCTCE_Info->state_y_prev )];
++        if( ( pDEVBLK->ctcexState & 0x07 ) == ( pCTCE_Info->state_x_prev & 0x07 ) )
++        {
++            ctce_state_l_xy[0] = 32 + *CTCE_StaStr[CTCE_STATE( pDEVBLK->ctcexState )];
++        }
++        else
++        {
++            ctce_state_l_xy[0] = *CTCE_StaStr[CTCE_STATE( pDEVBLK->ctcexState )];
++        }
++        if( ( pDEVBLK->ctceyState & 0x07 ) == ( pCTCE_Info->state_y_prev & 0x07 ) )
++        {
++            ctce_state_l_xy[1] = 32 + *CTCE_StaStr[CTCE_STATE( pDEVBLK->ctceyState )];
++        }
++        else
++        {
++            ctce_state_l_xy[1] = *CTCE_StaStr[CTCE_STATE( pDEVBLK->ctceyState )];
++        }
++        ctce_state_verify = pDEVBLK->ctceyState & 0x07;
++    }
++    else
++    {
++        ctce_Cmd    = pDEVBLK->ctcexCmd;
++        ctce_PktSeq = pDEVBLK->ctcePktSeq;
++        ctce_state_l_xy[0] = 32 + *CTCE_StaStr[CTCE_STATE( pCTCE_Info->state_x_prev )];
++        ctce_state_l_xy[1] = 32 + *CTCE_StaStr[CTCE_STATE( pCTCE_Info->state_y_prev )];
++        if( pDEVBLK->ctcexState == pCTCE_Info->state_x_prev )
++        {
++            ctce_state_r_xy[0] = 32 + *CTCE_StaStr[CTCE_STATE( pDEVBLK->ctcexState )];
++        }
++        else
++        {
++            ctce_state_r_xy[0] = *CTCE_StaStr[CTCE_STATE( pDEVBLK->ctcexState )];
++        }
++        if( pDEVBLK->ctceyState == pCTCE_Info->state_y_prev )
++        {
++            ctce_state_r_xy[1] = 32 + *CTCE_StaStr[CTCE_STATE( pDEVBLK->ctceyState )];
++        }
++        else
++        {
++            ctce_state_r_xy[1] = *CTCE_StaStr[CTCE_STATE( pDEVBLK->ctceyState )];
++        }
++        ctce_state_verify = pDEVBLK->ctcexState & 0x07;
++
++        // Report on the SCB returned if applicable.
++        if( IS_CTCE_CCW_SCB( ctce_Cmd ) )
++        {
++            snprintf( ctce_trace_xtra_temp, sizeof( ctce_trace_xtra_temp ),
++                " SCB=%02X=%s", pCTCE_Info->scb, CTCE_CmdStr[CTCE_Cmd[pCTCE_Info->scb]] );
++            strlcat( ctce_trace_xtra, ctce_trace_xtra_temp, sizeof( ctce_trace_xtra ) );
++        }
++    }
++
++    // Report on the device status.
++    if( pCTCE_Info->busy_waits != 0 )
++    {
++        snprintf( ctce_trace_xtra_temp, sizeof( ctce_trace_xtra_temp ),
++            " Busy_Waits=%d", pCTCE_Info->busy_waits );
++        strlcat( ctce_trace_xtra, ctce_trace_xtra_temp, sizeof( ctce_trace_xtra ) );
++    }
++
++    // Report on the WAIT RC if needed.
++    if( ( eCTCE_Cmd_Xfr == CTCE_SND ) && ( pCTCE_Info->wait_rc != 0 ) )
++    {
++        snprintf( ctce_trace_xtra_temp, sizeof( ctce_trace_xtra_temp ),
++            " WAIT->RC=%d", pCTCE_Info->wait_rc );
++        strlcat( ctce_trace_xtra, ctce_trace_xtra_temp, sizeof( ctce_trace_xtra ) );
++    }
++
++    // The "state mismatch" was used for debugging purposes
++    // which would show logic errors.
++    if( ( pCTCE_Info->state_new != ctce_state_verify )
++        && !( ( !pCTCE_Info->sent ) && ( IS_CTCE_SEND( pCTCE_Info->actions ) ) ) )
++    {
++        snprintf( ctce_trace_xtra_temp, sizeof( ctce_trace_xtra_temp ),
++            " CTCE_STATE MISMATCH %s!=%s(:FSM) !",
++            CTCE_StaStr[ctce_state_verify],
++            CTCE_StaStr[pCTCE_Info->state_new] );
++        strlcat( ctce_trace_xtra, ctce_trace_xtra_temp, sizeof( ctce_trace_xtra ) );
++    }
++
++    // The unit "Stat mismatch" was used for debugging purposes
++    // which would show logic errors.
++    if( ( *pUnitStat !=
++        ( ( ( eCTCE_Cmd_Xfr == CTCE_RCV ) && ( IS_CTCE_MATCH( pCTCE_Info->actions ) ) )
++        ? ( CSW_CE | CSW_DE ) : ( pCTCE_Info->x_unit_stat ) ) )
++        && !( *pUnitStat & ( CSW_UC | CSW_UX | CSW_SM ) )
++        && !( ( eCTCE_Cmd_Xfr == CTCE_RCV ) && ( IS_CTCE_WAIT( pCTCE_Info->actions ) ) )
++        &&  ( ( eCTCE_Cmd_Xfr != CTCE_RCV ) || ( *pUnitStat != 0 ) )
++        && !( pCTCE_Info->de_ready ) )
++    {
++        snprintf( ctce_trace_xtra_temp, sizeof( ctce_trace_xtra_temp ),
++            " Stat MISMATCH %02X!=%02X(:FSM) !",
++            *pUnitStat, pCTCE_Info->x_unit_stat );
++        strlcat( ctce_trace_xtra, ctce_trace_xtra_temp, sizeof( ctce_trace_xtra ) );
++    }
++
++/*
++
++HHC05079I <src_dev> CTCE: <direction> <dst_dev> <seq#> cmd=<cmd>=<cmd_hex>
++          xy=<x_src><y_src><direction><x_dst><y_dst> l=<length> k=<chksum>
++          Stat=<stat> <extra_msgs>
++
++Explanation
++        The CTCE device <local_dev> processes a <cmd> (hex value <cmd_hex>).
++        The <direction> shows whether it originates locally (the x-side),
++        and if it needs to be send (->) to the remote <remote_dev> device
++        (the y-side), or if the command was received (<-) from the y-side.
++        The command causes a state transition shown in <x_local><y_local>
++        <direction> <x_remote><y_remote>, using single-letter presentations
++        for these (p, c, r, w, a, n); the change is highlighted in uppercase.
++        (p=Prepare, c=Control, r=Read, w=Write, a=Available, n=Not-Ready).
++        The resulting unit device status is shown in hex <stat>.  Extra
++        action indications are given in <extra_msgs>, .e.g. WAIT for a
++        matching command from the other y-side, raise ATTN at the other
++        side which results in ATTN->RC=rc or is canceled ATTN->NONE,
++        DE_READY->RC=rc showing DE singalling READY from the other side,
++        and End-of-File being set (WEOF->SET) or cleared (WEOF->CLR) or
++        just found to be set (WEOF).  WEOF->UX shows when it generates a
++        device Unit Exception.  Other <extra_msgs> may appear.
++
++Action
++        None.
++
++*/
++
++    WRMSG( HHC05079, "I",  /* CTCE: %s %.6s #%04X cmd=%s=%02X xy=%.2s%s%.2s l=%04X k=%08X %s%s%s%s%s%s */
++        CTCX_DEVNUM( pDEVBLK ), CTCE_XfrStr[eCTCE_Cmd_Xfr],
++        CTCE_FILENAME, ctce_PktSeq,
++        CTCE_CmdStr[CTCE_Cmd[ctce_Cmd]], ctce_Cmd,
++        ctce_state_l_xy, CTCE_XfrStr[eCTCE_Cmd_Xfr],
++        ctce_state_r_xy,
++        sCount, IS_CTCE_CCW_WRT( ctce_Cmd )
++        ? CTCE_ChkSum( pCTCE_Buf + sizeof(CTCE_SOKPFX), sCount )
++        : CTCE_ChkSum( pCTCE_Buf, pCTCE_Info->sok_buf_len ),
++        ctce_trace_stat,
++        CTCE_ACTIONS_PRT( pCTCE_Info->actions ),
++        ctce_trace_xtra );
++    if( pDEVBLK->ccwstep )
++        packet_trace( (BYTE*)pCTCE_Buf, pCTCE_Info->sok_buf_len, '<' );
++    return;
++}
++
+--- a/devtype.h	2012-11-30 11:13:08.000000000 +0100
++++ b/devtype.h	2016-04-27 17:00:00.000000000 +0200
+@@ -75,6 +75,7 @@
+ extern DEVHND ctcadpt_device_hndinfo;
+ extern DEVHND ctci_device_hndinfo;
+ extern DEVHND ctct_device_hndinfo;
++extern DEVHND ctce_device_hndinfo;
+ extern DEVHND lcs_device_hndinfo;
+ extern DEVHND vmnet_device_hndinfo;
+ extern DEVHND ptp_device_hndinfo;
+--- a/hconsts.h	2012-11-30 11:13:08.000000000 +0100
++++ b/hconsts.h	2016-04-27 17:00:00.000000000 +0200
+@@ -327,5 +327,6 @@
+ #define CTC_VMNET       8               /* CTC link via wfk's vmnet  */
+ #define CTC_CFC         9               /* Coupling facility channel */
+ #define CTC_PTP        10               /* PTP link to TCP/IP stack  */
++#define CTC_CTCE       11               /* Enhanced CTC link via TCP */
+ 
+ #endif // _HCONSTS_H
+--- a/hdlmain.c	2012-11-30 11:13:08.000000000 +0100
++++ b/hdlmain.c	2016-04-27 17:00:00.000000000 +0200
+@@ -166,6 +166,7 @@
+     HDL_DEVICE(3088, ctcadpt_device_hndinfo );
+     HDL_DEVICE(CTCI, ctci_device_hndinfo    );
+     HDL_DEVICE(CTCT, ctct_device_hndinfo    );
++    HDL_DEVICE(CTCE, ctce_device_hndinfo    );
+     HDL_DEVICE(LCS,  lcs_device_hndinfo     );
+     HDL_DEVICE(VMNET,vmnet_device_hndinfo   );
+ #if defined(WIN32)
+--- a/hdteq.c	2012-11-30 11:13:08.000000000 +0100
++++ b/hdteq.c	2016-04-27 17:00:00.000000000 +0200
+@@ -14,15 +14,15 @@
+ 
+ static DTEQ dteq[] = {
+ /*
+-    This table provides aliases for device types, such that various 
++    This table provides aliases for device types, such that various
+     device types may be mapped to a common loadable module.
+ 
+-    The only purpose of this table is to associate the right loadable 
+-    module with a specific device type, before the device type in 
+-    question has been registered.  This table will not be searched 
++    The only purpose of this table is to associate the right loadable
++    module with a specific device type, before the device type in
++    question has been registered.  This table will not be searched
+     for registered device types or if the specific loadable module exists.
+ 
+-       device type requested 
++       device type requested
+        |
+        |         base device support
+        |         |
+@@ -72,6 +72,7 @@
+     { "LCS",    "3088"  },
+     { "CTCI",   "3088"  },
+     { "CTCT",   "3088"  },
++    { "CTCE",   "3088"  },
+     { "VMNET",  "3088"  },
+ 
+     { "HCHAN",  "2880"  },
+--- a/hmacros.h	2012-11-30 11:13:08.000000000 +0100
++++ b/hmacros.h	2016-04-27 17:00:00.000000000 +0200
+@@ -17,6 +17,15 @@
+ #include "hercules.h"
+ 
+ /*-------------------------------------------------------------------*/
++/*      UNREACHABLE_CODE         code that should NEVER be reached   */
++/*-------------------------------------------------------------------*/
++#ifdef _MSVC_
++  #define UNREACHABLE_CODE()        __assume(0)
++#else
++  #define UNREACHABLE_CODE()
++#endif
++
++/*-------------------------------------------------------------------*/
+ /*      Define INLINE attributes by compiler                         */
+ /*-------------------------------------------------------------------*/
+ #if !defined(INLINE)
+--- a/hstructs.h	2014-06-20 12:15:54.000000000 +0200
++++ b/hstructs.h	2016-04-27 17:00:00.000000000 +0200
+@@ -1224,6 +1224,25 @@
+         BYTE    ctctype;                /* CTC_xxx device type       */
+         BYTE    netdevname[IFNAMSIZ];   /* network device name       */
+ 
++        /*  Device dependent fields for ctcadpt : Enhanced CTC  @PJJ */
++
++        U16     ctcePktSeq;             /* CTCE Packet Sequence @PJJ */
++                                        /*      # in debug msgs @PJJ */
++        int     ctceSndSml;             /* CTCE Send Small size @PJJ */
++        BYTE    ctcexState;             /* CTCE State   x-side  @PJJ */
++        BYTE    ctcexCmd;               /* CTCE Command x-side  @PJJ */
++        BYTE    ctceyState;             /* CTCE State   y-side  @PJJ */
++        BYTE    ctceyCmd;               /* CTCE Command y-side  @PJJ */
++        BYTE    ctceyCmdSCB;            /* CTCE Cmd SCB source  @PJJ */
++        BYTE    ctce_UnitStat;          /* CTCE final UnitStat  @PJJ */
++        int     ctcefd;                 /* CTCE RecvThread File @PJJ */
++                                        /*      Desc / socket # @PJJ */
++        LOCK    ctceEventLock;          /* CTCE Condition LOCK  @PJJ */
++        COND    ctceEvent;              /* CTCE Recvd Condition @PJJ */
++        int     ctce_lport;             /* CTCE Local  port #   @PJJ */
++        int     ctce_rport;             /* CTCE Remote port #   @PJJ */
++        struct in_addr ctce_ipaddr;     /* CTCE Dest IP addr    @PJJ */
++
+         /*  Device dependent fields for printer                      */
+ 
+         int     printpos;               /* Number of bytes already
+--- a/html/hercconf.html	2012-11-30 11:13:08.000000000 +0100
++++ b/html/hercconf.html	2016-04-27 17:00:00.000000000 +0200
+@@ -143,6 +143,8 @@
+     0420.2    <a href="#CTCI">CTCI</a>    192.168.200.1  192.168.200.2
+     0440.2    <a href="#LCS">LCS</a>      -n   /dev/net/tun   192.168.200.2
+     0A00.3    <a href="#QETH">QETH</a>    iface /dev/net/tun
++    0E40      <a href="#CTCE">CTCE</a>    31880  192.168.1.202  32880
++    0E41      <a href="#CTCE">CTCE</a>    31882  192.168.1.202  32882
+ 
+     0580      <a href="#3420">3420</a>    /dev/nst0   # SCSI  (Linux or Windows)
+     0581      <a href="#3420">3420</a>    \\.\Tape0   # SCSI  (Windows only)
+@@ -1895,6 +1897,8 @@
+                 </td>
+                 <td>
+                         <a href="#CTCT">"CTCT" driver</a>
++                        or
++                        <a href="#CTCE">"CTCE" driver</a>
+                 </td>
+             </tr>
+ 
+@@ -3019,8 +3023,17 @@
+ <a name="CTCT"></a>
+     <dt><b>CTCT</b> &nbsp; &nbsp; (Channel to Channel Emulation via TCP connection)
+     <dd><p>
+-        An emulated CTCA to another Hercules system. Four arguments
+-        are required:
++        An emulated CTCA to another Hercules system.
++        This emulation mode appears to the operating system running in
++        the Hercules machine as an IBM 3088 Channel to Channel Adapter.
++        It provides communication via a TCP connection with another
++        instance of the CTCT driver, and is designed to carry TCP/IP
++        communications between two guest TCP/IP stacks.
++        CTCT may also be used for communication between the client and
++        server components of the
++        <a href="http://home.comcast.net/~mvsddt/">MVS Dynamic Debug Tool</a>.
++        <p>
++        Four arguments are required:
+         <p>
+ 
+         <dl> <!-- begin CTCT parms -->
+@@ -3057,8 +3070,73 @@
+ 
+         <p>
+ 
+-        Note: CTCT currently only supports IP traffic, so it cannot be used to
+-        transport NJE, SNA, PVM, etc. type payloads. This may change in the future.
++        Note: CTCT only supports IP traffic. Use <a href="#CTCE">CTCE</a>
++        to transport general purpose payloads such as NJE, SNA, PVM, etc.
++        <p>
++
++<p><br>
++
++<a name="CTCE"></a>
++    <dt><b>CTCE</b> &nbsp; &nbsp; (Enhanced Channel to Channel Emulation via TCP connection)
++    <dd><p>
++        The CTCE device type will emulate a real 3088 Channel to
++        Channnel Adapter also for non-IP traffic, enhancing the CTCT
++        capabilities. CTCE connections are also based on TCP/IP between
++        two (or more) Hercules instances, and requires an even-odd pair
++        of port numbers per device side. Only the even port numbers are
++        to be configured; the odd numbers are just derived by adding 1
++        to the (configured) even port numbers. The socket connection
++        pairs cross-connect, the arrows showing the send->receive
++        direction :
++        <pre>
++           x-lport-even -> y-rport-odd
++           x-lport-odd  <- y-rport-even
++        </pre>
++
++        <p>
++        Three arguments are required:
++        <p>
++
++        <dl> <!-- begin CTCE parms -->
++
++        <dt><code><em>lport</em></code>
++        <dd>is the even TCP/IP port on the local system.
++
++        <dt><code><em>raddress</em></code>
++        <dd>is the IP address of the remote system.
++
++        <dt><code><em>rport</em></code>
++        <dd>is the even TCP/IP port on the remote system.
++        </dl>
++
++        <p>
++        The remaining arguments are optional:
++        <p>
++        <dl>
++
++        <dt><code><em>mtu</em></code>
++        <dd>optional mtu buffer size, defaults to 32778
++
++        <dt><code><em>sml</em></code>
++        <dd>optional small minimum for mtu, defaults to 8
++
++        </dl> <!-- end CTCE parms -->
++
++        <p>
++        A sample CTCE device configuration is shown below:
++        <p>
++        Hercules PC Host A with IP address 192.168.1.100 :
++        <pre>
++              0E40  CTCE  30880  192.168.1.200  30880
++              0E41  CTCE  30882  192.168.1.200  30882 </pre>
++        <p>
++        Hercules PC Host B with IP address 192.168.1.200 :
++        <pre>
++              0E40  CTCE  30880  192.168.1.100  30880
++              0E41  CTCE  30882  192.168.1.100  30882 </pre>
++        <p>
++        CTCE connected Hercules instances can be hosted on either Unix
++        or Windows platforms, both sides do not need to be the same.
+         <p>
+ 
+ <p><br>
+--- a/html/hercfaq.html	2012-11-30 11:13:08.000000000 +0100
++++ b/html/hercfaq.html	2016-04-27 17:00:00.000000000 +0200
+@@ -897,6 +897,7 @@
+ <li>Robert Hodge
+ <li>Gabor Hoffer
+ <li>Dan Horak
++<li>Peter J. Jansen
+ <li>Soren Jorvang
+ <li><a href="http://konynenberg.com/">Willem Konynenberg</a>
+ <li>John Kozak
+--- a/msgenu.h	2012-11-30 11:13:08.000000000 +0100
++++ b/msgenu.h	2016-04-27 17:00:00.000000000 +0200
+@@ -791,6 +791,7 @@
+ #define HHC00964 "CTC: packet trace: %s %s %s"
+ 
+ /*ctcadpt.c */
++// Note: CTCE messages are in the 050xx range
+ #define HHC00970 "%1d:%04X CTC: unrecognized emulation type %s"
+ #define HHC00971 "%1d:%04X CTC: connect to %s:%s failed, starting server"
+ #define HHC00972 "%1d:%04X CTC: connected to %s:%s"
+@@ -799,32 +800,8 @@
+ #define HHC00975 "%1d:%04X CTC: invalid %s length: %d < %d"
+ #define HHC00976 "%1d:%04X CTC: EOF on read, CTC network down"
+ 
+-/* ndis_lcs.c */
+-#define HHC00980 "%1d:%04X NDIS Error: IPv4 address and --mac are mutually exclusive with --oat"
+-#define HHC00981 "%1d:%04X NDIS open failed"
+-#define HHC00982 "Error %s: [%04X]:%s"
+-#define HHC00988 "NDIS RB Statistics for Port %d\n" \
+-       "          \n" \
+-       "          Ringbuffer size    = %d bytes\n" \
+-       "          Numbers of slots   = %d\n" \
+-       "          \n" \
+-       "          Packet Read Count  = %d\n" \
+-       "                 Write Count = %d\n" \
+-       "          \n" \
+-       "          Bytes Read         = %d\n" \
+-       "                Written      = %d\n" \
+-       "          \nLast Error: %s"
+-#define HHC00989 "NDIS Statistics for Port %d\n" \
+-       "          \n" \
+-       "          Reads:  Cnt    %12" I64_FMT "d\n" \
+-       "                  Busy   %12" I64_FMT "d\n" \
+-       "                  Wait   %12" I64_FMT "d\n" \
+-       "                  Errors %12" I64_FMT "d\n" \
+-       "          \n" \
+-       "          Writes: Cnt    %12" I64_FMT "d\n" \
+-       "                  Busy   %12" I64_FMT "d\n" \
+-       "                  Wait   %12" I64_FMT "d\n" \
+-       "                  Errors %12" I64_FMT "d"
++// range 00980 - 00989 available
++// range 00990 - 00999 available
+ 
+ // reserve 010xx for communication adapter specific component messages
+ /* comm3705.c and commadpt.c console.c */
+@@ -1855,6 +1832,18 @@
+ #define HHC02805 "%1d:%04X Volser = %s"
+ #define HHC02806 "%1d:%04X Unlabeled tape"
+ 
++// range 02900 - 02999 available
++
++// range 03000 - 03099 available
++// range 03100 - 03199 available
++// range 03200 - 03299 available
++// range 03300 - 03399 available
++// range 03400 - 03499 available
++// range 03500 - 03599 available
++// range 03600 - 03699 available
++// range 03700 - 03799 available
++// range 03800 - 03899 available
++
+ // reserve 039xx for ptp related messages
+ #define HHC03901 "%1d:%04X PTP: Guest and driver IP addresses are the same"
+ #define HHC03902 "%1d:%04X PTP: Inet6 not supported"
+@@ -1904,8 +1893,8 @@
+ #define HHC03993 "%1d:%04X %s: Status %02X: Residual %04X: More %02X"
+ #define HHC03994 "%1d:%04X %s: Status %02X"
+ 
+-
+ // reserve 04xxx for host os specific component messages
++
+ // reserve 041xx for windows specific component messages (w32xxxx.c)
+ #define HHC04100 "%s version %s initiated"
+ #define HHC04101 "%s Statistics:\n" \
+@@ -1934,6 +1923,70 @@
+ #define HHC04111 "%1d:%04X Function %s failed: [%02d] %s"
+ #define HHC04112 "Cannot provide minimum emulated TOD clock resolution"
+ 
++// range 04200 - 04299 available
++// range 04300 - 04399 available
++// range 04400 - 04499 available
++// range 04500 - 04599 available
++// range 04600 - 04699 available
++// range 04700 - 04799 available
++// range 04800 - 04899 available
++// range 04900 - 04999 available
++
++// reserve 050xx for CTCE related messages
++#define HHC05050 "%1d:%04X CTCE: Error creating socket: %s"
++#define HHC05051 "%1d:%04X CTCE: TCP_NODELAY error for socket (port %d): %s"
++#define HHC05052 "%1d:%04X CTCE: Error binding to socket (port %d): %s"
++#define HHC05053 "%1d:%04X CTCE: Connect error :%d -> %s:%d, %s"
++#define HHC05054 "%1d:%04X CTCE: Started outbound connection :%d -> %s:%d"
++#define HHC05055 "%1d:%04X CTCE: Incorrect number of parameters"
++#define HHC05056 "%1d:%04X CTCE: Invalid port number: %s"
++#define HHC05057 "%1d:%04X CTCE: Local port number not even: %s"
++#define HHC05058 "%1d:%04X CTCE: Invalid IP address %s"
++#define HHC05059 "%1d:%04X CTCE: Invalid port number: %s"
++#define HHC05060 "%1d:%04X CTCE: Remote port number not even: %s"
++#define HHC05061 "%1d:%04X CTCE: Invalid MTU size %s, allowed range is %d to 65536"
++#define HHC05062 "%1d:%04X CTCE: Invalid Small MTU size %s ignored"
++#define HHC05063 "%1d:%04X CTCE: Awaiting inbound connection :%d <- %s:%d"
++#define HHC05064 "%1d:%04X CTCE: Error creating socket: %s"
++#define HHC05065 "%1d:%04X CTCE: Error binding to socket (port=%d): %s"
++#define HHC05066 "%1d:%04X CTCE: Error on call to listen (port=%d): %s"
++#define HHC05067 "%1d:%04X CTCE: Inconsistent config=%s+%d, connecting client=%s"
++#define HHC05068 "%1d:%04X CTCE: TCP_NODELAY error for socket (port %d): %s"
++#define HHC05069 "%1d:%04X CTCE: create_thread error: %s"
++#define HHC05070 "%1d:%04X CTCE: Accepted inbound connection :%d <- %s (bufsize=%d,%d)"
++#define HHC05071 "%1d:%04X CTCE: SEND status incorrectly encoded !"
++#define HHC05072 "%1d:%04X CTCE: Not all sockets connected: send=%d, receive=%d"
++#define HHC05073 "%1d:%04X CTCE: bufsize parameter %d is too small; increase at least to %d"
++#define HHC05074 "%1d:%04X CTCE: Error writing to %s: %s"
++#define HHC05075 "%1d:%04X CTCE: Halt or Clear Recognized"
++#define HHC05076 "%1d:%04X CTCE: Connection closed; %"PRIu64" MB received in %"PRIu64" packets from %s"
++#define HHC05077 "%1d:%04X CTCE: Error reading from %s: %s"
++#define HHC05078 "%1d:%04X CTCE: -| Halt x=%s y=%s"
++#define HHC05079 "%1d:%04X CTCE: %s %.6s #%04X cmd=%s=%02X xy=%.2s%s%.2s l=%04X k=%08X %s%s%s%s%s%s"
++
++// range 05100 - 05199 available
++// range 05200 - 05299 available
++// range 05300 - 05399 available
++// range 05400 - 05499 available
++// range 05500 - 05599 available
++// range 05600 - 05699 available
++// range 05700 - 05799 available
++// range 05800 - 05899 available
++// range 05900 - 05999 available
++
++// range 06000 - 06999 available
++// range 07000 - 07999 available
++// range 08000 - 08999 available
++// range 09000 - 09999 available
++
++// range 10000 - 10999 available
++// range 11000 - 11999 available
++// range 12000 - 12999 available
++// range 13000 - 13999 available
++// range 14000 - 14999 available
++// range 15000 - 15999 available
++// range 16000 - 16999 available
++
+ // reserve 17000-17499 messages command processing
+ #define HHC17000 "Missing or invalid argument(s)"
+ #define HHC17001 "%s server listening %s"
+@@ -1983,6 +2036,17 @@
+ #define HHC17534 "REXX(%s) Error Registering %s RC(%d)"
+ #define HHC17535 "REXX(%s) Error Deregistering %s RC(%d)"
+ 
++// range 18000 - 18999 available
++// range 19000 - 19999 available
++
++// range 20000 - 29999 available
++// range 30000 - 39999 available
++// range 40000 - 49999 available
++// range 50000 - 59999 available
++// range 60000 - 69999 available
++// range 70000 - 79999 available
++// range 80000 - 89999 available
++
+ // reserve 90000 messages for debugging
+ #define HHC90000 "DBG: %s"
+ #define HHC90001 " *** Assertion Failed! *** %s(%d); function: %s()"
+@@ -2081,14 +2145,39 @@
+ #define HHC90364 "   zp    : %s"
+ #define HHC90365 "dead_end : %02X %02X %s"
+ 
++// range 90400 - 90499 available
++// range 90500 - 90599 available
++// range 90600 - 90699 available
++// range 90700 - 90799 available
++// range 90800 - 90899 available
++
++// range 90900 - 90998 available
++//               90999 dbgtrace.h
++
++// range 91000 - 91999 available
++// range 92000 - 92999 available
++
++// range 93000 - 93099 available
++// range 93100 - 93199 available
++// range 93200 - 93299 available
++// range 93300 - 93399 available
++
++// range 93400 - 93479  (unused; reason unknown)
++
+ /* tapeccws tapedev */
+ #define HHC93480 "%1d:%04X TDSPSTAT[%02X] msg1[%-8s] msg2[%-8s] msg[%-8s] mnt[%s] unmnt[%s] TDSPFLAG[%02X]"
++
+ /* tape general     */
+ #define HHC93590 "DBG: TAPE: %s"
+ 
+-/* ctc/lcs/ndis */
+-#define HHC90900 "DBG: CTC: %s device port %2.2X: %s"
+-#define HHC90901 "DBG: CTC: %s: %s"
+-
+-//      HHC90999  see dbgtrace.h
+-
++// range 93600 - 93699 available
++// range 93700 - 93799 available
++// range 93800 - 93899 available
++// range 93900 - 93999 available
++
++// range 94000 - 94999 available
++// range 95000 - 95999 available
++// range 96000 - 96999 available
++// range 97000 - 97999 available
++// range 98000 - 98999 available
++// range 99000 - 99999 available
+--- a/sr.h	2012-11-30 11:13:08.000000000 +0100
++++ b/sr.h	2016-04-27 17:00:00.000000000 +0200
+@@ -430,6 +430,7 @@
+ #define SR_DEV_CTCT             0xace3c000
+ #define SR_DEV_VMNET            0xace3d000
+ #define SR_DEV_LCS              0xace3e000
++#define SR_DEV_CTCE             0xace3f000
+ 
+ #define SR_DELIMITER            0xaceffffe
+ #define SR_EOF                  0xacefffff

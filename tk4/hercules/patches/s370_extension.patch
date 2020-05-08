@@ -1,0 +1,2564 @@
+--- a/archlvl.c	2012-11-30 11:13:08.000000000 +0100
++++ b/archlvl.c	2016-03-27 20:30:00.000000000 +0200
+@@ -149,7 +149,7 @@
+ FACILITY(TRAN_FAC2,        ESA390|ZARCH, NONE,      ESA390|ZARCH,  ALS2|ALS3)
+ #endif
+ #if defined(_FEATURE_MESSAGE_SECURITY_ASSIST)
+-FACILITY(MSG_SECURITY,     ESA390|ZARCH, NONE,      ESA390|ZARCH,  ALS2|ALS3)
++FACILITY(MSG_SECURITY, S370|ESA390|ZARCH, NONE, S370|ESA390|ZARCH, ALS0|ALS1|ALS2|ALS3)
+ #endif
+ #if defined(_FEATURE_LONG_DISPLACEMENT)
+ FACILITY(LONG_DISPL_INST,  Z390,         NONE,      Z390,          ALS2|ALS3)
+@@ -234,19 +234,19 @@
+ FACILITY(ACC_EX_FS_INDIC,  Z390,         NONE,      Z390,          ALS3)
+ #endif
+ #if defined(_FEATURE_MESSAGE_SECURITY_ASSIST_EXTENSION_3)
+-FACILITY(MSA_EXTENSION_3,  Z390,         NONE,      Z390,          ALS3)
++FACILITY(MSA_EXTENSION_3,  S370|ESA390|ZARCH, NONE, S370|ESA390|ZARCH, ALS0|ALS1|ALS2|ALS3)
+ #endif
+ #if defined(_FEATURE_MESSAGE_SECURITY_ASSIST_EXTENSION_4)
+-FACILITY(MSA_EXTENSION_4,  Z390,         NONE,      Z390,          ALS3)
++FACILITY(MSA_EXTENSION_4,  S370|ESA390|ZARCH, NONE, S370|ESA390|ZARCH, ALS0|ALS1|ALS2|ALS3)
+ #endif
+ 
+ /* The Following entries are not part of STFL(E) but do indicate the availability of facilities */
+ FACILITY(MOVE_INVERSE,     S370|ESA390|ZARCH, ZARCH, S370|ESA390|ZARCH, ALS0|ALS1|ALS2|ALS3)
+ #if defined(_FEATURE_MESSAGE_SECURITY_ASSIST_EXTENSION_1)
+-FACILITY(MSA_EXTENSION_1,  Z390,         NONE,      Z390,          ALS3)
++FACILITY(MSA_EXTENSION_1,  S370|ESA390|ZARCH, NONE, S370|ESA390|ZARCH, ALS0|ALS1|ALS2|ALS3)
+ #endif
+ #if defined(_FEATURE_MESSAGE_SECURITY_ASSIST_EXTENSION_2)
+-FACILITY(MSA_EXTENSION_2,  Z390,         NONE,      Z390,          ALS3)
++FACILITY(MSA_EXTENSION_2,  S370|ESA390|ZARCH, NONE, S370|ESA390|ZARCH, ALS0|ALS1|ALS2|ALS3)
+ #endif
+ #if defined(_FEATURE_HERCULES_DIAGCALLS)
+ FACILITY(PROBSTATE_DIAGF08,NONE,         NONE,      S370|ESA390|ZARCH, NONE)
+--- a/config.h.in	2012-12-02 10:58:43.000000000 +0100
++++ b/config.h.in	2016-03-27 20:30:00.000000000 +0200
+@@ -10,7 +10,7 @@
+ #undef CCKD_BZIP2
+ 
+ /* Define to provide additional information about this build */
+-#undef CUSTOM_BUILD_STRING
++#define CUSTOM_BUILD_STRING "Hercules for TK4- (64-bit Linux)"
+ 
+ /* Define to enable extra debugging code (TRACE/VERIFY/ASSERT macros) */
+ #undef DEBUG
+@@ -645,6 +645,9 @@
+ /* Define to enable Hercules Dynamic Loader feature */
+ #undef OPTION_DYNAMIC_LOAD
+ 
++/* Define to preload dyncrypt.so at Hercules startup */
++#undef OPTION_PRELOAD_DYNCRYPT
++
+ /* Define to enable enhanced-mode 'include' file support in configuration file
+    */
+ #undef OPTION_ENHANCED_CONFIG_INCLUDE
+--- a/crypto/dyncrypt.c	2012-11-30 11:13:08.000000000 +0100
++++ b/crypto/dyncrypt.c	2016-04-21 21:15:00.000000000 +0200
+@@ -115,8 +115,7 @@
+   int j; \
+   \
+   buf[0] = 0; \
+-  WRGMSG_ON; \
+-  WRGMSG(HHC90109, "D", s, ""); \
++  WRMSG(HHC90109, "D", s, ""); \
+   for(i = 0; i < (y); i++) \
+   { \
+     for(j = 0; j < (x); j++) \
+@@ -131,10 +130,9 @@
+     } \
+     snprintf(buf + strlen(buf), sizeof(buf) - strlen(buf), " |"); \
+     buf[sizeof(buf)-1] = '\0'; \
+-    WRGMSG(HHC90110, "D", buf); \
++    WRMSG(HHC90110, "D", buf); \
+     buf[0] = 0; \
+   } \
+-  WRGMSG_OFF; \
+ }
+ 
+ /*----------------------------------------------------------------------------*/
+@@ -164,9 +162,9 @@
+  * Tom St Denis, tomstdenis@..., http://libtomcrypt.org
+ */
+ 
+-/* Remarks Bernard van der Helm: Strongly adjusted for
+- * Hercules-390. We need the internal function gcm_gf_mult.
+- * The rest of of the code is deleted.
++/* Remarks Bernard van der Helm & JW: Strongly adjusted for
++ * Hercules-390. We need the internal functions gcm_gf_mult
++ * and xts_mult_x. The rest of of the code is deleted.
+  *
+  * Thanks Tom!
+ */
+@@ -193,7 +191,7 @@
+ void gcm_gf_mult(const unsigned char *a, const unsigned char *b, unsigned char *c)
+ {
+   unsigned char Z[16], V[16];
+-  unsigned x, y, z;
++  unsigned char x, y, z;
+ 
+   zeromem(Z, 16);
+   XMEMCPY(V, a, 16);
+@@ -210,6 +208,56 @@
+   }
+   XMEMCPY(c, Z, 16);
+ }
++
++/* I = 2*I */
++void xts_mult_x(unsigned char *I)
++{
++  int x;
++  unsigned char t, tt;
++
++  for (x = t = 0; x < 16; x++) {
++     tt   = I[x] >> 7;
++     I[x] = ((I[x] << 1) | t) & 0xFF;
++     t    = tt;
++  }
++  if (tt) {
++     I[0] ^= 0x87;
++  } 
++}
++
++/* c = b*a -- bit swapped call of gcm_gf_mult for use with xts */
++void xts_gf_mult(const unsigned char *a, const unsigned char *b, unsigned char *c)
++{
++  unsigned char a_r[16], b_r[16], c_r[16];
++  int i;
++  static const unsigned char BitReverseTable256[] = 
++  {
++    0x00, 0x80, 0x40, 0xC0, 0x20, 0xA0, 0x60, 0xE0, 0x10, 0x90, 0x50, 0xD0, 0x30, 0xB0, 0x70, 0xF0, 
++    0x08, 0x88, 0x48, 0xC8, 0x28, 0xA8, 0x68, 0xE8, 0x18, 0x98, 0x58, 0xD8, 0x38, 0xB8, 0x78, 0xF8, 
++    0x04, 0x84, 0x44, 0xC4, 0x24, 0xA4, 0x64, 0xE4, 0x14, 0x94, 0x54, 0xD4, 0x34, 0xB4, 0x74, 0xF4, 
++    0x0C, 0x8C, 0x4C, 0xCC, 0x2C, 0xAC, 0x6C, 0xEC, 0x1C, 0x9C, 0x5C, 0xDC, 0x3C, 0xBC, 0x7C, 0xFC, 
++    0x02, 0x82, 0x42, 0xC2, 0x22, 0xA2, 0x62, 0xE2, 0x12, 0x92, 0x52, 0xD2, 0x32, 0xB2, 0x72, 0xF2, 
++    0x0A, 0x8A, 0x4A, 0xCA, 0x2A, 0xAA, 0x6A, 0xEA, 0x1A, 0x9A, 0x5A, 0xDA, 0x3A, 0xBA, 0x7A, 0xFA,
++    0x06, 0x86, 0x46, 0xC6, 0x26, 0xA6, 0x66, 0xE6, 0x16, 0x96, 0x56, 0xD6, 0x36, 0xB6, 0x76, 0xF6, 
++    0x0E, 0x8E, 0x4E, 0xCE, 0x2E, 0xAE, 0x6E, 0xEE, 0x1E, 0x9E, 0x5E, 0xDE, 0x3E, 0xBE, 0x7E, 0xFE,
++    0x01, 0x81, 0x41, 0xC1, 0x21, 0xA1, 0x61, 0xE1, 0x11, 0x91, 0x51, 0xD1, 0x31, 0xB1, 0x71, 0xF1,
++    0x09, 0x89, 0x49, 0xC9, 0x29, 0xA9, 0x69, 0xE9, 0x19, 0x99, 0x59, 0xD9, 0x39, 0xB9, 0x79, 0xF9, 
++    0x05, 0x85, 0x45, 0xC5, 0x25, 0xA5, 0x65, 0xE5, 0x15, 0x95, 0x55, 0xD5, 0x35, 0xB5, 0x75, 0xF5,
++    0x0D, 0x8D, 0x4D, 0xCD, 0x2D, 0xAD, 0x6D, 0xED, 0x1D, 0x9D, 0x5D, 0xDD, 0x3D, 0xBD, 0x7D, 0xFD,
++    0x03, 0x83, 0x43, 0xC3, 0x23, 0xA3, 0x63, 0xE3, 0x13, 0x93, 0x53, 0xD3, 0x33, 0xB3, 0x73, 0xF3, 
++    0x0B, 0x8B, 0x4B, 0xCB, 0x2B, 0xAB, 0x6B, 0xEB, 0x1B, 0x9B, 0x5B, 0xDB, 0x3B, 0xBB, 0x7B, 0xFB,
++    0x07, 0x87, 0x47, 0xC7, 0x27, 0xA7, 0x67, 0xE7, 0x17, 0x97, 0x57, 0xD7, 0x37, 0xB7, 0x77, 0xF7, 
++    0x0F, 0x8F, 0x4F, 0xCF, 0x2F, 0xAF, 0x6F, 0xEF, 0x1F, 0x9F, 0x5F, 0xDF, 0x3F, 0xBF, 0x7F, 0xFF
++  };
++
++  for (i=0; i<=15; i++)
++  {
++    a_r[i] = BitReverseTable256[a[i]];
++    b_r[i] = BitReverseTable256[b[i]];
++  }
++  gcm_gf_mult(a_r, b_r, c_r);
++  for (i=0; i<=15; i++) c[i] = BitReverseTable256[c_r[i]];
++}
+ #endif /* #ifdef FEATURE_MESSAGE_SECURITY_ASSIST_EXTENSION_4 */
+ 
+ /*----------------------------------------------------------------------------*/
+@@ -554,9 +602,9 @@
+  * Tom St Denis, tomstdenis@..., http://libtomcrypt.org
+ */
+ 
+-/* Remarks Bernard van der Helm: Strongly adjusted for
+- * Hercules-390. We need the internal function gcm_gf_mult.
+- * The rest of of the code is deleted.
++/* Remarks Bernard van der Helm & JW: Strongly adjusted for
++ * Hercules-390. We need the internal functions gcm_gf_mult
++ * and xts_mult_x. The rest of of the code is deleted.
+  *
+  * Thanks Tom!
+ */
+@@ -583,7 +631,7 @@
+ void gcm_gf_mult(const unsigned char *a, const unsigned char *b, unsigned char *c)
+ {
+   unsigned char Z[16], V[16];
+-  unsigned x, y, z;
++  unsigned char x, y, z;
+ 
+   zeromem(Z, 16);
+   XMEMCPY(V, a, 16);
+@@ -601,14 +649,61 @@
+   XMEMCPY(c, Z, 16);
+ }
+ 
+-void power(unsigned char *a, unsigned char b)
++/* I = 2*I */
++void xts_mult_x(unsigned char *I)
+ {
+-  unsigned char two[16] = { 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2 };
++  int x;
++  unsigned char t, tt;
++
++  for (x = t = 0; x < 16; x++) {
++     tt   = I[x] >> 7;
++     I[x] = ((I[x] << 1) | t) & 0xFF;
++     t    = tt;
++  }
++  if (tt) {
++     I[0] ^= 0x87;
++  } 
++}
++
++/* c = b*a -- bit swapped call of gcm_gf_mult for use with xts */
++void xts_gf_mult(const unsigned char *a, const unsigned char *b, unsigned char *c)
++{
++  unsigned char a_r[16], b_r[16], c_r[16];
++  int i;
++  static const unsigned char BitReverseTable256[] = 
++  {
++    0x00, 0x80, 0x40, 0xC0, 0x20, 0xA0, 0x60, 0xE0, 0x10, 0x90, 0x50, 0xD0, 0x30, 0xB0, 0x70, 0xF0, 
++    0x08, 0x88, 0x48, 0xC8, 0x28, 0xA8, 0x68, 0xE8, 0x18, 0x98, 0x58, 0xD8, 0x38, 0xB8, 0x78, 0xF8, 
++    0x04, 0x84, 0x44, 0xC4, 0x24, 0xA4, 0x64, 0xE4, 0x14, 0x94, 0x54, 0xD4, 0x34, 0xB4, 0x74, 0xF4, 
++    0x0C, 0x8C, 0x4C, 0xCC, 0x2C, 0xAC, 0x6C, 0xEC, 0x1C, 0x9C, 0x5C, 0xDC, 0x3C, 0xBC, 0x7C, 0xFC, 
++    0x02, 0x82, 0x42, 0xC2, 0x22, 0xA2, 0x62, 0xE2, 0x12, 0x92, 0x52, 0xD2, 0x32, 0xB2, 0x72, 0xF2, 
++    0x0A, 0x8A, 0x4A, 0xCA, 0x2A, 0xAA, 0x6A, 0xEA, 0x1A, 0x9A, 0x5A, 0xDA, 0x3A, 0xBA, 0x7A, 0xFA,
++    0x06, 0x86, 0x46, 0xC6, 0x26, 0xA6, 0x66, 0xE6, 0x16, 0x96, 0x56, 0xD6, 0x36, 0xB6, 0x76, 0xF6, 
++    0x0E, 0x8E, 0x4E, 0xCE, 0x2E, 0xAE, 0x6E, 0xEE, 0x1E, 0x9E, 0x5E, 0xDE, 0x3E, 0xBE, 0x7E, 0xFE,
++    0x01, 0x81, 0x41, 0xC1, 0x21, 0xA1, 0x61, 0xE1, 0x11, 0x91, 0x51, 0xD1, 0x31, 0xB1, 0x71, 0xF1,
++    0x09, 0x89, 0x49, 0xC9, 0x29, 0xA9, 0x69, 0xE9, 0x19, 0x99, 0x59, 0xD9, 0x39, 0xB9, 0x79, 0xF9, 
++    0x05, 0x85, 0x45, 0xC5, 0x25, 0xA5, 0x65, 0xE5, 0x15, 0x95, 0x55, 0xD5, 0x35, 0xB5, 0x75, 0xF5,
++    0x0D, 0x8D, 0x4D, 0xCD, 0x2D, 0xAD, 0x6D, 0xED, 0x1D, 0x9D, 0x5D, 0xDD, 0x3D, 0xBD, 0x7D, 0xFD,
++    0x03, 0x83, 0x43, 0xC3, 0x23, 0xA3, 0x63, 0xE3, 0x13, 0x93, 0x53, 0xD3, 0x33, 0xB3, 0x73, 0xF3, 
++    0x0B, 0x8B, 0x4B, 0xCB, 0x2B, 0xAB, 0x6B, 0xEB, 0x1B, 0x9B, 0x5B, 0xDB, 0x3B, 0xBB, 0x7B, 0xFB,
++    0x07, 0x87, 0x47, 0xC7, 0x27, 0xA7, 0x67, 0xE7, 0x17, 0x97, 0x57, 0xD7, 0x37, 0xB7, 0x77, 0xF7, 
++    0x0F, 0x8F, 0x4F, 0xCF, 0x2F, 0xAF, 0x6F, 0xEF, 0x1F, 0x9F, 0x5F, 0xDF, 0x3F, 0xBF, 0x7F, 0xFF
++  };
+ 
+-  zeromem(a, 15);
+-  a[15] = 2;
+-  for(b--; b; b--)
+-    gcm_gf_mult(a, two, a);
++  for (i=0; i<=15; i++)
++  {
++    a_r[i] = BitReverseTable256[a[i]];
++    b_r[i] = BitReverseTable256[b[i]];
++  }
++  gcm_gf_mult(a_r, b_r, c_r);
++  for (i=0; i<=15; i++) c[i] = BitReverseTable256[c_r[i]];
++}
++
++void power(unsigned char *a, unsigned int b)
++{
++  unsigned long long i;
++  for(i=1; i<=b; i++)
++    xts_mult_x(a);
+ }
+ 
+ #define P(a) { int _i; printf("  { "); for(_i = 0; _i < 16; _i++) { printf("0x%02x", a[_i]); printf((_i < 15 ? ", " : " ")); } printf("},\n"); }
+@@ -621,22 +716,27 @@
+ {
+   unsigned char exp_table[128][16];
+   unsigned char a[16];
+-  int i;
++  unsigned long long i;
+ 
+-  zeromem(a, 15);
+-  a[15] = 2;
+-  for(i = 1; i < 128 ; i++)
++  zeromem(a, 16);
++  a[0] = 2;
++  for(i = 1; i <= 128 ; i++)
+   {
+     memcpy(exp_table[128 - i], a, 16);
+-    gcm_gf_mult(a, a, a);
++    xts_gf_mult(a, a, a);
+   }
+   for(i = 0; i < 128; i++)
+     P(exp_table[i]);
+ 
+-  printf("Checking last 8 enties\n");
+-  for(i = 1; i < 0x100; i <<= 1)
+-  {
+-    power(a, i);
++  printf("Checking last 32 entries\n");
++  zeromem(a, 16);
++  a[0] = 2;
++  P(a);
++  for(i = 2; i < 0xffffffff; i <<= 1)
++  {
++    zeromem(a, 16);
++    a[0] = 2;
++    power(a, i - 1);
+     P(a);
+   }
+   return(0);
+@@ -645,137 +745,137 @@
+ 
+ static BYTE exp_table[128][16] =
+ {
+-  { 0xc0, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x67, 0x0e, 0xab, 0x4c, 0x00, 0x00, 0x00, 0x00 },
+-  { 0x7f, 0x6d, 0xb6, 0xda, 0xdb, 0x6d, 0xb6, 0xdb, 0x6d, 0xb6, 0xdb, 0x6c, 0x92, 0x49, 0x24, 0x92 },
+-  { 0x5c, 0x8b, 0x14, 0x51, 0x45, 0x15, 0x9e, 0x79, 0xe7, 0x9f, 0x3c, 0xf3, 0xcf, 0x3d, 0xf7, 0xdf },
+-  { 0x14, 0xe7, 0x9f, 0x8a, 0x29, 0xe7, 0x9f, 0xff, 0xfe, 0xba, 0xea, 0x28, 0xa3, 0x0c, 0x31, 0xc7 },
+-  { 0x66, 0x4d, 0xa2, 0x9b, 0x79, 0xf6, 0xca, 0x30, 0xd1, 0x5b, 0x75, 0xc7, 0x04, 0x00, 0x10, 0x51 },
+-  { 0xcf, 0x6a, 0x7e, 0x04, 0x24, 0xb0, 0x80, 0x67, 0xd1, 0x21, 0xe2, 0xdf, 0x3a, 0xae, 0xff, 0xba },
+-  { 0xf2, 0x9e, 0xa7, 0xe7, 0xf3, 0x64, 0x7c, 0x0f, 0xad, 0x4b, 0x4d, 0xbc, 0x5a, 0xd5, 0xfd, 0x5f },
+-  { 0xa9, 0xff, 0xac, 0xe1, 0x19, 0x06, 0x87, 0x1c, 0xb0, 0x3c, 0x50, 0xfc, 0xac, 0x30, 0xd5, 0x55 },
+-  { 0x03, 0xd6, 0x8f, 0x61, 0xc3, 0x06, 0xd4, 0x12, 0xc7, 0xd3, 0x34, 0xa2, 0x06, 0x0f, 0xdf, 0x1c },
+-  { 0x4a, 0x23, 0x3f, 0xdc, 0xd3, 0xcd, 0x27, 0x2c, 0xc6, 0xe5, 0x34, 0x69, 0x8c, 0xff, 0xd8, 0xeb },
+-  { 0x90, 0x84, 0xe3, 0xce, 0x7e, 0xca, 0x90, 0x78, 0xfe, 0xab, 0xae, 0xef, 0x43, 0x08, 0x2a, 0x9a },
+-  { 0xa6, 0x15, 0x2d, 0x3b, 0xc8, 0xab, 0xd2, 0x7d, 0x90, 0x8b, 0x9b, 0x29, 0xda, 0x67, 0x7f, 0xfb },
+-  { 0x5c, 0x96, 0xc3, 0x29, 0x8a, 0x77, 0xba, 0x83, 0x23, 0x5e, 0x48, 0xd5, 0xfe, 0x81, 0xf5, 0x57 },
+-  { 0xd3, 0x8c, 0x67, 0x4e, 0x2d, 0x21, 0xcf, 0x3e, 0x94, 0x13, 0x63, 0x25, 0xab, 0xf1, 0xda, 0xaa },
+-  { 0x0b, 0xc6, 0xfe, 0x9f, 0xdd, 0x96, 0x36, 0xd2, 0x7d, 0x19, 0x13, 0xcf, 0x97, 0x7c, 0x8c, 0x49 },
+-  { 0x53, 0xa4, 0x5a, 0x64, 0x48, 0xb9, 0x05, 0xf5, 0x74, 0x6a, 0xa2, 0x29, 0xcc, 0xc3, 0x1d, 0x9a },
+-  { 0xf2, 0x8c, 0xf2, 0x28, 0xca, 0x61, 0x25, 0x6d, 0x10, 0xd0, 0x97, 0xc7, 0x09, 0x25, 0x08, 0x7b },
+-  { 0x2f, 0x0d, 0x0e, 0xbf, 0xd8, 0xd6, 0x50, 0x2d, 0x02, 0x92, 0xd3, 0x51, 0x60, 0x75, 0xa7, 0xf3 },
+-  { 0x9c, 0x0d, 0xcc, 0x04, 0xc4, 0x81, 0x20, 0xfa, 0x58, 0x23, 0xb9, 0xfc, 0x96, 0x1e, 0x47, 0xc5 },
+-  { 0xbb, 0x23, 0x09, 0xf2, 0x24, 0x26, 0xcd, 0x3a, 0xb5, 0x02, 0xfe, 0xd6, 0x01, 0x70, 0x6b, 0xc3 },
+-  { 0x43, 0x3d, 0x70, 0xe1, 0x5a, 0x1c, 0xa2, 0x6e, 0x37, 0xe0, 0x26, 0x7b, 0x12, 0xb9, 0x3b, 0xe5 },
+-  { 0x6c, 0xf6, 0x5a, 0xd9, 0xca, 0xb0, 0x19, 0x68, 0x87, 0x2c, 0x4f, 0xf4, 0xe4, 0xba, 0x05, 0xe7 },
+-  { 0x88, 0x30, 0xba, 0x86, 0xb8, 0x19, 0x92, 0x99, 0xb9, 0xf3, 0xfb, 0x3f, 0xcb, 0xc6, 0x69, 0x18 },
+-  { 0x5c, 0x97, 0x53, 0x46, 0x91, 0x5e, 0xc1, 0xa4, 0xdf, 0xb4, 0xde, 0x97, 0xa8, 0xce, 0x50, 0x84 },
+-  { 0x2c, 0x04, 0x4b, 0x4f, 0x4f, 0x50, 0x53, 0xbd, 0x4e, 0x19, 0x70, 0x82, 0xa2, 0xb1, 0x2f, 0x26 },
+-  { 0xeb, 0x4a, 0x7b, 0xda, 0xd8, 0x24, 0x6d, 0xed, 0x26, 0x51, 0x8d, 0x78, 0xb3, 0xb6, 0xde, 0xef },
+-  { 0x41, 0x06, 0xa7, 0xfa, 0x6c, 0x80, 0x75, 0x30, 0xe4, 0x56, 0x02, 0xe7, 0xd7, 0xc4, 0xcf, 0x0a },
+-  { 0x3c, 0x4f, 0x85, 0x6f, 0x49, 0x12, 0x60, 0x45, 0x59, 0x1f, 0x49, 0xcd, 0x0f, 0xf5, 0x50, 0xa4 },
+-  { 0xc9, 0x7e, 0x51, 0x94, 0x8a, 0x53, 0xae, 0x62, 0xbc, 0xae, 0x5f, 0x67, 0x31, 0xae, 0xe3, 0xb4 },
+-  { 0xee, 0x16, 0x60, 0x78, 0x01, 0x7a, 0x57, 0x19, 0x39, 0xeb, 0x61, 0x09, 0x4b, 0x8a, 0x10, 0x86 },
+-  { 0x26, 0x20, 0xcc, 0xe3, 0xa3, 0x83, 0x4d, 0xbc, 0x06, 0x44, 0x8d, 0x5e, 0x88, 0x81, 0xa4, 0xd9 },
+-  { 0x5d, 0x21, 0xc3, 0x06, 0x28, 0x86, 0x1f, 0x9b, 0x92, 0xf7, 0xec, 0x30, 0x2f, 0xc6, 0xda, 0x61 },
+-  { 0x7f, 0xe4, 0xdc, 0xca, 0x4f, 0xd4, 0x5a, 0x63, 0x81, 0xa6, 0xd9, 0x5e, 0x9c, 0x20, 0x3d, 0x65 },
+-  { 0xe9, 0x90, 0xab, 0xe2, 0xf8, 0xb0, 0x92, 0xf0, 0xe6, 0x2d, 0x1d, 0x65, 0xa6, 0x1d, 0xdb, 0x18 },
+-  { 0x11, 0x86, 0x31, 0x4c, 0x39, 0x06, 0x3b, 0xaf, 0x32, 0x52, 0x96, 0x9f, 0x4a, 0x3c, 0xb1, 0xe9 },
+-  { 0xc2, 0x8c, 0xcf, 0xd0, 0x5a, 0xa9, 0x33, 0x02, 0x59, 0x74, 0xcb, 0x35, 0xf2, 0x23, 0xf9, 0x77 },
+-  { 0xfc, 0x45, 0x3f, 0x91, 0x81, 0xc6, 0xb9, 0x41, 0x90, 0xa9, 0xfe, 0x80, 0xc6, 0x5c, 0x48, 0xc7 },
+-  { 0x6f, 0x52, 0x47, 0x41, 0x54, 0xa3, 0x1a, 0xfd, 0xf5, 0xcc, 0x8b, 0x3e, 0x93, 0x92, 0xf0, 0x98 },
+-  { 0x0d, 0xea, 0x57, 0x81, 0x32, 0xa9, 0x32, 0x17, 0x1f, 0x53, 0x93, 0x2a, 0xaf, 0xeb, 0x32, 0x96 },
+-  { 0xf1, 0x59, 0x84, 0xe3, 0xa0, 0x57, 0xde, 0x87, 0xe4, 0x7e, 0x93, 0x23, 0x1e, 0x80, 0x3e, 0x94 },
+-  { 0xe4, 0x6c, 0x7e, 0x56, 0x4f, 0xe2, 0x0e, 0xfd, 0x73, 0x41, 0x2a, 0xb5, 0x0f, 0xa5, 0xdb, 0x06 },
+-  { 0x9b, 0x94, 0x70, 0xb7, 0x47, 0x15, 0xa5, 0xa9, 0xbd, 0x46, 0x76, 0xf1, 0xe5, 0xb1, 0x11, 0xef },
+-  { 0xb4, 0xff, 0x39, 0x54, 0x74, 0x60, 0x3d, 0xc0, 0x30, 0xdc, 0x31, 0x13, 0x19, 0xd7, 0x5e, 0x8a },
+-  { 0x1c, 0x73, 0xa4, 0x25, 0x99, 0x5d, 0x56, 0xd6, 0xd5, 0xe2, 0xbf, 0x89, 0x62, 0x17, 0xaa, 0xb6 },
+-  { 0x8a, 0x9d, 0x6b, 0x27, 0xc0, 0x0d, 0xe3, 0x23, 0xba, 0x6e, 0x8e, 0x2b, 0x89, 0x5a, 0xdc, 0x94 },
+-  { 0x3f, 0x01, 0x5b, 0xa2, 0xf9, 0x5b, 0xb3, 0x2d, 0xb1, 0xa7, 0x6e, 0x5a, 0x0b, 0x48, 0x1f, 0x06 },
+-  { 0x8f, 0x26, 0x29, 0x79, 0xd4, 0x23, 0x24, 0xa9, 0x7e, 0x12, 0x8c, 0xca, 0x11, 0x9f, 0xe4, 0xef },
+-  { 0x65, 0x77, 0xb2, 0x14, 0x2c, 0x26, 0xcf, 0x2d, 0xef, 0xe1, 0xda, 0x6c, 0x69, 0x09, 0x78, 0xbc },
+-  { 0x44, 0x0e, 0x8b, 0x99, 0x6b, 0x63, 0x15, 0xb0, 0x71, 0x6b, 0x4b, 0xca, 0xe5, 0x66, 0x5a, 0x94 },
+-  { 0x13, 0xa6, 0xb9, 0x4a, 0x3d, 0x2d, 0xe6, 0xe6, 0x6f, 0xe8, 0x88, 0x7b, 0xac, 0x1b, 0xc2, 0x94 },
+-  { 0xe9, 0x98, 0x49, 0x53, 0x5e, 0xad, 0x09, 0x9d, 0xef, 0xad, 0xca, 0xf4, 0x3f, 0xf3, 0x4c, 0x06 },
+-  { 0x53, 0x5d, 0xbc, 0xee, 0x0a, 0x6f, 0x5a, 0xa2, 0xe9, 0xa8, 0xfc, 0x87, 0x58, 0x9d, 0xc5, 0x02 },
+-  { 0x08, 0xba, 0x8e, 0x3d, 0x2e, 0x6b, 0x43, 0xc1, 0xc7, 0x99, 0x2e, 0x00, 0x80, 0xfc, 0x4e, 0x7f },
+-  { 0x97, 0x5f, 0xfb, 0xd4, 0x6b, 0xf0, 0x86, 0xd3, 0x04, 0xb1, 0x08, 0x88, 0xa1, 0x00, 0x0f, 0x47 },
+-  { 0x5b, 0x5d, 0x01, 0x13, 0xe6, 0xf1, 0xb6, 0xc8, 0xc7, 0x39, 0xa9, 0x0c, 0xb3, 0x6d, 0xa4, 0xae },
+-  { 0x17, 0xab, 0xe0, 0x8c, 0xbc, 0x21, 0xc2, 0xfa, 0x71, 0x33, 0xd7, 0x9b, 0xcc, 0x82, 0x18, 0x26 },
+-  { 0xa0, 0x7f, 0x08, 0x4f, 0xef, 0xdc, 0x29, 0x4b, 0xa5, 0x26, 0xb7, 0x60, 0xcc, 0x7a, 0xff, 0xb4 },
+-  { 0x30, 0x41, 0xdf, 0xc2, 0x5d, 0x99, 0xf7, 0x62, 0xd5, 0xbc, 0x39, 0x3e, 0xef, 0x89, 0x9f, 0x14 },
+-  { 0xa0, 0x2f, 0x6d, 0x2e, 0x7d, 0x79, 0xd6, 0xf5, 0xf7, 0x1b, 0x85, 0x52, 0xa2, 0x14, 0x37, 0x86 },
+-  { 0x44, 0xff, 0xf7, 0xa3, 0x22, 0x11, 0xd5, 0xac, 0xb5, 0x10, 0xe1, 0xd5, 0x5e, 0xe0, 0x06, 0xa6 },
+-  { 0x2a, 0x2a, 0x3a, 0xcd, 0xeb, 0x6c, 0xb1, 0x9e, 0xd5, 0x5a, 0x4c, 0x7d, 0xcd, 0x38, 0xf6, 0xfd },
+-  { 0x48, 0xae, 0x38, 0x63, 0x13, 0xc2, 0x56, 0x57, 0xb6, 0x98, 0x8b, 0x30, 0xe0, 0xb8, 0xa0, 0xf1 },
+-  { 0xc8, 0xb2, 0x0f, 0x43, 0x5c, 0x72, 0xc8, 0x1d, 0x26, 0x9a, 0x1b, 0x9c, 0xfb, 0x7b, 0xfb, 0x61 },
+-  { 0xb1, 0xcb, 0x75, 0x7d, 0x06, 0xff, 0xe6, 0xe3, 0xfb, 0x53, 0x9f, 0x6a, 0x69, 0x79, 0xe1, 0xe5 },
+-  { 0x4f, 0xd4, 0xfb, 0x3c, 0xe0, 0x4c, 0xc1, 0x6e, 0x88, 0xe3, 0x47, 0x41, 0xe1, 0x52, 0xc5, 0x3c },
+-  { 0xc6, 0x85, 0x7a, 0x49, 0x7a, 0x87, 0x67, 0xae, 0xab, 0xa2, 0xd0, 0x8b, 0x65, 0x1a, 0xc4, 0x30 },
+-  { 0x48, 0x13, 0x7b, 0x71, 0x3d, 0x3c, 0xde, 0xd9, 0x03, 0xbe, 0x03, 0xcb, 0x7f, 0x25, 0x16, 0x69 },
+-  { 0x3c, 0xbe, 0xf8, 0xeb, 0xb7, 0x0c, 0x80, 0x41, 0xfa, 0x8c, 0xeb, 0x9e, 0xcf, 0xe5, 0x58, 0x65 },
+-  { 0xf0, 0xe3, 0x91, 0xe1, 0xf9, 0x53, 0x45, 0x2b, 0x06, 0x08, 0x7d, 0xbe, 0x02, 0xcf, 0x51, 0xf5 },
+-  { 0xc9, 0x2d, 0xf0, 0x46, 0x92, 0xf1, 0xcf, 0xa8, 0xd3, 0x3e, 0x1e, 0x7e, 0xff, 0x14, 0x98, 0xc7 },
+-  { 0x9a, 0x79, 0xfb, 0x25, 0x52, 0xd2, 0xd8, 0xcb, 0x58, 0xd0, 0x45, 0x12, 0x86, 0xb9, 0xcf, 0xbc },
+-  { 0xae, 0x5b, 0xc9, 0x11, 0x4e, 0x2a, 0xc2, 0x4d, 0x28, 0xca, 0x9f, 0x2c, 0x44, 0x32, 0x68, 0xa2 },
+-  { 0x31, 0xbc, 0xda, 0xf0, 0xbd, 0x2e, 0xee, 0xdb, 0xf3, 0xe8, 0xb6, 0x43, 0x64, 0xef, 0x4d, 0x24 },
+-  { 0xbc, 0xda, 0x7f, 0x1c, 0x13, 0x30, 0x1b, 0xd1, 0xeb, 0xbb, 0x10, 0xba, 0x89, 0x41, 0x98, 0xa6 },
+-  { 0x05, 0xec, 0xbf, 0x29, 0x8e, 0xd2, 0x01, 0x75, 0x60, 0xeb, 0x32, 0x1e, 0x5e, 0x96, 0xc1, 0x6f },
+-  { 0xec, 0xb7, 0x32, 0x7b, 0xf5, 0xe0, 0xd1, 0x48, 0x50, 0x7e, 0xf2, 0x55, 0x2c, 0xdd, 0x4f, 0x75 },
+-  { 0x7b, 0xeb, 0x5a, 0xf9, 0xd4, 0x02, 0x8e, 0xcb, 0xdc, 0xd7, 0x1b, 0xad, 0x62, 0x9c, 0xb8, 0xaa },
+-  { 0xa1, 0x59, 0x6c, 0x37, 0x20, 0xfc, 0x5f, 0x34, 0xac, 0x45, 0x49, 0x08, 0xf1, 0x7c, 0x06, 0x92 },
+-  { 0x52, 0x8c, 0xf0, 0x71, 0x6f, 0x8f, 0xd5, 0x44, 0xa8, 0xb1, 0x2b, 0x86, 0xf5, 0x36, 0x1d, 0x96 },
+-  { 0xef, 0x15, 0x39, 0xce, 0x30, 0x61, 0x5b, 0xb7, 0x02, 0x9e, 0x7c, 0x74, 0x97, 0xef, 0x14, 0xeb },
+-  { 0xfc, 0x13, 0x25, 0x22, 0x73, 0xec, 0xd0, 0x35, 0x78, 0x50, 0x41, 0xea, 0x4f, 0x0f, 0x8a, 0x2c },
+-  { 0x66, 0x05, 0xfd, 0x5b, 0xb0, 0xc2, 0x71, 0x6e, 0xfa, 0x7f, 0x3d, 0x6a, 0x9f, 0x76, 0x7c, 0x90 },
+-  { 0x3e, 0xa9, 0x72, 0x89, 0x93, 0x2a, 0x4b, 0x35, 0x03, 0x8c, 0xd2, 0x8b, 0xb8, 0x76, 0xab, 0x96 },
+-  { 0x1b, 0x80, 0x3a, 0x46, 0xd9, 0x41, 0x5b, 0x3c, 0xda, 0x93, 0x36, 0x5c, 0x82, 0x93, 0x2b, 0x79 },
+-  { 0x4e, 0xc9, 0x01, 0x28, 0xd3, 0xda, 0x9e, 0x0a, 0x5b, 0x2f, 0x3e, 0x14, 0x4c, 0xf0, 0x05, 0xa8 },
+-  { 0x25, 0x70, 0xe6, 0x5e, 0x2e, 0x98, 0xca, 0xf8, 0x65, 0xa4, 0x56, 0xb6, 0x11, 0x4f, 0x44, 0xa4 },
+-  { 0xdc, 0xed, 0x91, 0x03, 0x0f, 0xf5, 0x7a, 0x54, 0x3b, 0xd4, 0xb2, 0xd6, 0x7d, 0x4f, 0xae, 0x6f },
+-  { 0x61, 0x40, 0xae, 0x15, 0xb0, 0xbc, 0x41, 0x15, 0x2e, 0x81, 0x1c, 0x46, 0x8f, 0xb9, 0xc3, 0x43 },
+-  { 0xb2, 0xc2, 0x7d, 0xa9, 0xf9, 0xc2, 0xf9, 0x30, 0x3f, 0xdc, 0xdd, 0x31, 0x01, 0x42, 0x7a, 0xc1 },
+-  { 0xc6, 0x99, 0x24, 0xf9, 0x84, 0xe3, 0x7a, 0xaf, 0x2d, 0x5a, 0x89, 0xe9, 0x54, 0x7a, 0x52, 0x9a },
+-  { 0xf1, 0x1f, 0x01, 0xcb, 0x45, 0x62, 0x8c, 0xc6, 0x05, 0x9e, 0xf7, 0x27, 0xc4, 0x88, 0xf2, 0x96 },
+-  { 0x2a, 0x71, 0x25, 0x91, 0x23, 0x4c, 0xd1, 0x07, 0x15, 0xac, 0x3f, 0xd0, 0x30, 0xee, 0x6d, 0x6b },
+-  { 0x3e, 0x62, 0x9c, 0xf5, 0x4d, 0x5e, 0xf7, 0x9d, 0xd7, 0xcc, 0x8b, 0xa7, 0x82, 0x3b, 0x2f, 0x53 },
+-  { 0x63, 0xfe, 0x06, 0xf3, 0xb9, 0xc9, 0x90, 0x3b, 0xbf, 0x9c, 0x39, 0xce, 0x3d, 0xa7, 0xfa, 0x73 },
+-  { 0x29, 0x21, 0x90, 0x36, 0x09, 0x7e, 0x99, 0x49, 0x8f, 0xd7, 0xac, 0xde, 0xa2, 0x19, 0x58, 0xd7 },
+-  { 0x80, 0xed, 0x34, 0xb5, 0xf0, 0x63, 0xd5, 0xfb, 0xc8, 0x4f, 0xe2, 0x1a, 0x71, 0x0f, 0xfa, 0x9c },
+-  { 0x81, 0x7e, 0xa4, 0xa8, 0x1a, 0xb8, 0x81, 0x92, 0x0a, 0x23, 0xbe, 0x3a, 0xd1, 0xb2, 0x83, 0xb0 },
+-  { 0x6a, 0x4e, 0x55, 0xf9, 0x34, 0x1c, 0x4b, 0x5a, 0xc6, 0xff, 0xb2, 0x5f, 0xfe, 0xb2, 0x84, 0x84 },
+-  { 0x58, 0xf2, 0x1c, 0x23, 0x7b, 0xb7, 0x7b, 0x66, 0x42, 0xa8, 0x6b, 0xe0, 0xb8, 0x47, 0x04, 0xb4 },
+-  { 0xef, 0xa4, 0x62, 0xbb, 0x1e, 0xb1, 0x35, 0x3f, 0xbb, 0x01, 0xea, 0x8b, 0xff, 0x76, 0x98, 0x22 },
+-  { 0x09, 0x35, 0xbb, 0x6e, 0x31, 0x97, 0x66, 0xa5, 0xa6, 0x4c, 0xfa, 0x31, 0x7e, 0x48, 0xe2, 0x00 },
+-  { 0x04, 0x54, 0x56, 0xde, 0x31, 0x28, 0xff, 0xbd, 0xa3, 0x3d, 0xea, 0xfc, 0xbd, 0x68, 0xf6, 0x49 },
+-  { 0x3e, 0x48, 0x5d, 0x0c, 0x12, 0x2d, 0xc6, 0x5e, 0x2b, 0x9d, 0xed, 0x5c, 0x87, 0x62, 0x3f, 0x08 },
+-  { 0x64, 0xba, 0x79, 0x1b, 0x65, 0x71, 0xd8, 0x84, 0xbf, 0x10, 0x4a, 0xf0, 0x15, 0x1d, 0x89, 0x5b },
+-  { 0x65, 0xc9, 0x63, 0x70, 0xb6, 0x37, 0x2b, 0x04, 0xdf, 0x33, 0xc5, 0x6f, 0x84, 0x0d, 0xce, 0xc5 },
+-  { 0x31, 0xf2, 0x51, 0x68, 0x29, 0x7e, 0x00, 0x81, 0x1a, 0xc4, 0xf8, 0x10, 0xe8, 0xae, 0xfc, 0x2e },
+-  { 0x4f, 0x7d, 0x19, 0xd2, 0x80, 0x50, 0x37, 0x64, 0x3b, 0xad, 0xab, 0x6c, 0xd0, 0xdf, 0x6f, 0x02 },
+-  { 0x89, 0xe2, 0xe6, 0xc1, 0xbc, 0x38, 0xef, 0x87, 0x71, 0x72, 0x44, 0xe6, 0x83, 0x74, 0x47, 0x5b },
+-  { 0x05, 0xe2, 0x60, 0xd6, 0x8e, 0x83, 0x5c, 0xef, 0x1b, 0xd3, 0x04, 0x35, 0x72, 0xf4, 0x8f, 0x57 },
+-  { 0x52, 0xf7, 0x55, 0xa0, 0x28, 0x80, 0xe2, 0x4e, 0x52, 0xd4, 0xb7, 0x0a, 0x1e, 0xf8, 0xd4, 0xaa },
+-  { 0x63, 0x97, 0x05, 0xb0, 0xcb, 0xfe, 0xd8, 0xd4, 0xb8, 0xed, 0xb6, 0x42, 0x9d, 0xc9, 0x44, 0x6d },
+-  { 0x63, 0xfc, 0x77, 0x16, 0x57, 0x31, 0xe6, 0xe4, 0x5c, 0xa0, 0x8f, 0x2b, 0x2e, 0xbf, 0x88, 0xbc },
+-  { 0x68, 0x14, 0x3e, 0xe4, 0xac, 0x9b, 0x4d, 0x70, 0x54, 0x79, 0xcc, 0x2f, 0x00, 0x37, 0xdc, 0x94 },
+-  { 0xc1, 0x9f, 0xb7, 0xd9, 0x3a, 0x48, 0x6c, 0x9b, 0xf9, 0x42, 0x68, 0xa9, 0xd7, 0x4a, 0x4e, 0x22 },
+-  { 0x8e, 0xfd, 0x7f, 0x37, 0x41, 0xb4, 0xde, 0x6e, 0xea, 0x3a, 0x09, 0x97, 0x3f, 0x6c, 0x76, 0x6d },
+-  { 0xc1, 0x5c, 0x7f, 0x54, 0x47, 0x36, 0x55, 0xb4, 0xf1, 0xce, 0x5d, 0x42, 0xdf, 0xea, 0x3d, 0x43 },
+-  { 0x75, 0x55, 0x50, 0x24, 0x68, 0xda, 0x44, 0x40, 0x39, 0xc6, 0x79, 0xcf, 0x3d, 0x52, 0xad, 0xc1 },
+-  { 0x53, 0xdc, 0xbb, 0xe0, 0x11, 0xc9, 0xf1, 0xc9, 0x55, 0x6f, 0x60, 0xbf, 0xaf, 0x3c, 0xe0, 0x3e },
+-  { 0x7e, 0x5c, 0x70, 0xb0, 0x48, 0xfd, 0x05, 0x74, 0xab, 0x3f, 0xac, 0x53, 0x8a, 0xdc, 0xa2, 0xdd },
+-  { 0xba, 0x27, 0x91, 0x4c, 0xe8, 0xb0, 0x04, 0x08, 0x2b, 0xb2, 0xd5, 0x8f, 0xea, 0x61, 0x2b, 0x63 },
+-  { 0xda, 0x4c, 0xea, 0xef, 0xd6, 0x7f, 0x23, 0x0f, 0x91, 0x74, 0x04, 0xb6, 0xcd, 0x58, 0x9a, 0x53 },
+-  { 0xb4, 0x2b, 0x1e, 0xfc, 0x97, 0x53, 0x84, 0x0d, 0xd0, 0x98, 0xf1, 0x35, 0xe2, 0x6b, 0xc4, 0xd7 },
+-  { 0xa2, 0x00, 0x00, 0x00, 0xe1, 0x00, 0x00, 0x00, 0xda, 0x2b, 0x1e, 0xfc, 0x4d, 0x78, 0x9a, 0xf1 },
+-  { 0x6e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0xda, 0x2b, 0xc4, 0xd7 },
+-  { 0xa2, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xda, 0xf1 },
+-  { 0x6e, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7 },
+-  { 0x1c, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0e },
+-  { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02 }
++  { 0xa4, 0x6d, 0xdb, 0xb6, 0x6d, 0xdb, 0xb6, 0x6d, 0x92, 0x24, 0x49, 0x92, 0x24, 0x49, 0x92, 0x24 },
++  { 0x5a, 0x45, 0x51, 0x14, 0x8a, 0xa2, 0x28, 0x8a, 0x61, 0x18, 0x86, 0x61, 0x9a, 0xa6, 0x69, 0x9a },
++  { 0xac, 0xb6, 0xf3, 0x3c, 0x45, 0x51, 0xd7, 0x75, 0xdb, 0xb6, 0xae, 0xeb, 0xfb, 0xbe, 0xae, 0xeb },
++  { 0x92, 0xcf, 0xb6, 0xe7, 0x28, 0x00, 0x49, 0xdb, 0x75, 0x9e, 0x24, 0x08, 0xc3, 0x71, 0x1c, 0xc7 },
++  { 0x98, 0x29, 0xb7, 0x52, 0x3e, 0xd5, 0xac, 0xeb, 0xea, 0x8a, 0x92, 0x86, 0x30, 0x4d, 0xd3, 0x34 },
++  { 0xa5, 0x75, 0x1a, 0xb6, 0x81, 0x7a, 0x63, 0x18, 0x61, 0x6e, 0xa4, 0xe3, 0x78, 0xca, 0xb2, 0x2c },
++  { 0x06, 0x4f, 0x09, 0x28, 0x0e, 0xbb, 0x06, 0x86, 0x41, 0x19, 0xb8, 0x20, 0x9d, 0x18, 0x86, 0x61 },
++  { 0xb9, 0x17, 0xaf, 0x7f, 0xe2, 0xab, 0x24, 0x8a, 0xf9, 0x0d, 0xab, 0x34, 0x69, 0x65, 0x21, 0x08 },
++  { 0xc5, 0x8c, 0x3c, 0x3e, 0x5f, 0xa3, 0x15, 0x60, 0xb5, 0x2a, 0x1c, 0x14, 0xde, 0x41, 0x64, 0xdf },
++  { 0x6c, 0x77, 0x82, 0x2a, 0xce, 0x66, 0x2b, 0xab, 0x33, 0x0f, 0x8b, 0x64, 0x47, 0x00, 0x93, 0x30 },
++  { 0xac, 0x13, 0x6f, 0x36, 0x52, 0x0f, 0xbd, 0xeb, 0x0b, 0xf1, 0xbc, 0xe2, 0x22, 0x9a, 0x6d, 0x9a },
++  { 0x9d, 0x77, 0x37, 0x05, 0x91, 0xaf, 0xa7, 0x77, 0x6e, 0xf4, 0x06, 0x8e, 0x3f, 0xe7, 0xa2, 0xeb },
++  { 0x68, 0xed, 0xcb, 0x5a, 0xc6, 0xa9, 0x2b, 0x02, 0x67, 0xb6, 0x55, 0x67, 0xe4, 0x86, 0x8b, 0x71 },
++  { 0xc1, 0xac, 0xe2, 0x06, 0x2c, 0x14, 0xc3, 0x12, 0xe0, 0xdc, 0x57, 0xfd, 0xc2, 0x66, 0xa7, 0xbe },
++  { 0x52, 0xf7, 0x0e, 0x21, 0x67, 0x69, 0xb6, 0x9c, 0x1e, 0xb5, 0xdb, 0x27, 0x85, 0x8d, 0xf5, 0xaa },
++  { 0xd5, 0x64, 0x57, 0x5f, 0x5b, 0xf8, 0xbd, 0x46, 0xc2, 0x2d, 0x44, 0x17, 0x1b, 0x43, 0x7a, 0xc7 },
++  { 0xca, 0xf4, 0x80, 0xce, 0x40, 0x11, 0x93, 0x8d, 0x08, 0xf9, 0xc4, 0xd8, 0xd7, 0x26, 0x02, 0xef },
++  { 0x62, 0x45, 0xee, 0xbb, 0x2b, 0x44, 0x31, 0xfb, 0x88, 0x5c, 0x92, 0x85, 0x56, 0x7a, 0x0a, 0x39 },
++  { 0x0f, 0x7e, 0xa0, 0x29, 0x58, 0xda, 0xb3, 0x46, 0x6d, 0x1c, 0xff, 0xab, 0x97, 0xa5, 0xd4, 0x0d },
++  { 0x1d, 0x69, 0xf1, 0x7a, 0x67, 0x56, 0xaf, 0xeb, 0x9d, 0x28, 0xeb, 0x4a, 0x04, 0xc7, 0x77, 0xb3 },
++  { 0x00, 0x04, 0x5a, 0xb7, 0xc9, 0x36, 0xef, 0xc3, 0x9f, 0xb8, 0x90, 0xe3, 0x45, 0x95, 0x34, 0x74 },
++  { 0xa3, 0x57, 0x77, 0x72, 0x64, 0xbc, 0xfb, 0x27, 0xb6, 0xe6, 0xf5, 0x58, 0xe1, 0xe7, 0x7f, 0xbf },
++  { 0x53, 0xbe, 0xfd, 0xf9, 0x8f, 0x1b, 0x4b, 0x58, 0xb5, 0xd0, 0x72, 0xbc, 0x18, 0x4c, 0xae, 0xe2 },
++  { 0x26, 0x26, 0x80, 0x72, 0x9e, 0x20, 0xa9, 0xab, 0x39, 0x57, 0xb1, 0x96, 0xc8, 0x3b, 0xfb, 0x18 },
++  { 0x98, 0xde, 0x73, 0x58, 0x44, 0x8c, 0x90, 0x42, 0xbd, 0xf5, 0x2c, 0xc7, 0x90, 0x58, 0xb8, 0xfa },
++  { 0xd8, 0xc1, 0xca, 0x5a, 0x03, 0xee, 0xa7, 0x8d, 0x31, 0x04, 0xa0, 0xb5, 0x53, 0x34, 0x21, 0xc7 },
++  { 0xf1, 0xad, 0x31, 0xd1, 0xff, 0x32, 0xad, 0x5b, 0xec, 0xdc, 0x8f, 0xa1, 0x49, 0x3e, 0x40, 0xa6 },
++  { 0x55, 0x39, 0x50, 0x01, 0xbe, 0x3d, 0xcf, 0xb5, 0xe1, 0x5b, 0xf5, 0xb1, 0x33, 0x1a, 0x62, 0x8b },
++  { 0x7c, 0xc7, 0xb9, 0x38, 0x66, 0xc6, 0x4f, 0xff, 0xd6, 0xb6, 0xba, 0x3e, 0x95, 0x88, 0xf9, 0xa2 },
++  { 0x54, 0x51, 0x2d, 0x6b, 0xf0, 0xc0, 0x52, 0x24, 0xa6, 0xf3, 0x82, 0x8f, 0x75, 0x9c, 0xcc, 0x18 },
++  { 0xa1, 0x82, 0xb8, 0x37, 0x4d, 0x0e, 0xe3, 0x29, 0xdb, 0xf0, 0x13, 0x09, 0x75, 0xea, 0x7b, 0x21 },
++  { 0x7b, 0xdd, 0x20, 0xd6, 0x8e, 0x75, 0xa8, 0xdc, 0xca, 0x98, 0x06, 0x45, 0xc1, 0xdf, 0xe2, 0x40 },
++  { 0x9d, 0x67, 0xea, 0x02, 0xab, 0xdf, 0xaa, 0x3c, 0x32, 0x7d, 0x08, 0x5e, 0xa1, 0x24, 0x31, 0x6c },
++  { 0x55, 0x0c, 0x78, 0x74, 0xe3, 0x86, 0x8e, 0x04, 0x67, 0xfc, 0x78, 0x0c, 0x0d, 0x22, 0x65, 0x9f },
++  { 0xb3, 0x40, 0x1b, 0x97, 0x11, 0x20, 0xc5, 0xf1, 0x4d, 0x64, 0xee, 0x6c, 0x56, 0x04, 0x42, 0x86 },
++  { 0x97, 0xf3, 0xa8, 0x2e, 0x6b, 0x65, 0x43, 0x18, 0x25, 0x82, 0x64, 0x53, 0x40, 0x45, 0xdb, 0xef },
++  { 0x5b, 0x5f, 0xa3, 0xf2, 0x32, 0x06, 0x0e, 0xf5, 0x8a, 0x2a, 0xf6, 0x96, 0x10, 0xb4, 0x6d, 0x38 },
++  { 0xc3, 0x85, 0xf8, 0x69, 0xc8, 0x87, 0x92, 0x87, 0xdd, 0xc3, 0x4b, 0x89, 0x47, 0xa7, 0xad, 0xbb },
++  { 0x44, 0xe5, 0xbd, 0x6a, 0x1a, 0xf9, 0xa6, 0xac, 0x37, 0xd7, 0x7c, 0xca, 0x7c, 0xa0, 0x74, 0x55 },
++  { 0x06, 0x23, 0xf4, 0x6d, 0xab, 0xdf, 0x4f, 0x49, 0xad, 0x63, 0xe0, 0x3a, 0x34, 0xcf, 0xc0, 0x92 },
++  { 0x38, 0xaa, 0x78, 0xfb, 0x3a, 0x81, 0x3c, 0xcd, 0xf4, 0xf3, 0x78, 0x20, 0x67, 0x47, 0x86, 0x7c },
++  { 0x31, 0x96, 0x4e, 0x57, 0x2c, 0xa0, 0xd1, 0x9a, 0x1d, 0xc6, 0xc9, 0xa0, 0x51, 0x64, 0x26, 0x28 },
++  { 0x3b, 0x27, 0x2e, 0xc5, 0x4c, 0x91, 0x00, 0x78, 0xef, 0xb4, 0x1b, 0x78, 0x59, 0x88, 0x64, 0xd6 },
++  { 0xba, 0x5e, 0xda, 0x0d, 0x44, 0x08, 0xed, 0x00, 0x99, 0x5b, 0x80, 0x44, 0xe5, 0x44, 0xa0, 0x59 },
++  { 0xed, 0xe9, 0xdc, 0xbf, 0x06, 0xce, 0xc4, 0xdf, 0x07, 0xb3, 0x4d, 0x6c, 0xb1, 0x25, 0x25, 0x05 },
++  { 0x45, 0xed, 0x44, 0xc4, 0x78, 0xbd, 0x41, 0x84, 0x73, 0x71, 0xa2, 0x15, 0x19, 0xf2, 0xd3, 0x92 },
++  { 0x99, 0xf1, 0x5d, 0xa9, 0xc7, 0x1f, 0x58, 0x13, 0x3b, 0xc9, 0xe0, 0x7f, 0xf6, 0xda, 0x74, 0xca },
++  { 0x7a, 0xe4, 0x1e, 0x81, 0xc2, 0x87, 0x2a, 0x04, 0x77, 0xa9, 0xdc, 0xb4, 0x32, 0xd5, 0xa3, 0x79 },
++  { 0x6e, 0x96, 0x66, 0xfa, 0x3e, 0x40, 0xc3, 0x1e, 0x89, 0x7f, 0xca, 0x49, 0x1f, 0x1a, 0xed, 0xba },
++  { 0xd8, 0x5b, 0xea, 0x61, 0x8f, 0x96, 0xfa, 0xb4, 0x59, 0x8f, 0xdb, 0x07, 0x2a, 0xfa, 0x94, 0xaa },
++  { 0x62, 0xec, 0x3d, 0x2e, 0x00, 0x38, 0x51, 0x23, 0x6a, 0x2c, 0xca, 0xc1, 0x14, 0x03, 0x8f, 0x1c },
++  { 0x3d, 0x5b, 0x3b, 0xb6, 0xe4, 0x1b, 0xcb, 0x00, 0x56, 0xd4, 0xd6, 0x66, 0x44, 0x81, 0xb4, 0xde },
++  { 0x23, 0x22, 0xe5, 0xd1, 0x03, 0x6b, 0x2c, 0x02, 0xb0, 0xc2, 0x6a, 0x48, 0x5b, 0x43, 0x12, 0x5c },
++  { 0xbb, 0x59, 0x37, 0x05, 0x00, 0x84, 0x40, 0xe9, 0xbd, 0x81, 0x9d, 0x02, 0x7c, 0x04, 0x4b, 0xfb },
++  { 0x6e, 0x36, 0xa0, 0xd5, 0x4e, 0x02, 0xf4, 0x92, 0x4c, 0xff, 0x7f, 0x3b, 0x37, 0x03, 0xb6, 0xc6 },
++  { 0x19, 0xc4, 0xd7, 0x7c, 0xdc, 0x4e, 0x10, 0xf9, 0xf4, 0x13, 0x4b, 0xee, 0x1d, 0x0f, 0xfd, 0xca },
++  { 0xec, 0x97, 0xcb, 0x2f, 0xec, 0x39, 0x3c, 0xdd, 0xc9, 0xd7, 0xdc, 0x56, 0x6e, 0x70, 0xf9, 0x31 },
++  { 0x35, 0x9c, 0x95, 0x7a, 0xca, 0x30, 0xbd, 0x44, 0xee, 0x9c, 0xba, 0x7b, 0x11, 0x4a, 0x2d, 0xf7 },
++  { 0x6a, 0x0f, 0x8b, 0x13, 0x3e, 0xc6, 0x55, 0x6f, 0xe9, 0x47, 0x41, 0x6c, 0xcc, 0xf1, 0x4f, 0x74 },
++  { 0x6a, 0x54, 0x97, 0xaf, 0x0b, 0x64, 0x42, 0x2b, 0xf9, 0xfc, 0x10, 0xf0, 0x91, 0x44, 0x88, 0xbf },
++  { 0x94, 0xa4, 0x61, 0x65, 0x14, 0x32, 0xcb, 0x55, 0xff, 0x8e, 0xbf, 0xd4, 0xa8, 0xad, 0x25, 0xe3 },
++  { 0xbc, 0xa3, 0x36, 0x97, 0x7d, 0x65, 0x7f, 0xd4, 0x53, 0xf6, 0x2f, 0xda, 0x31, 0x7e, 0xc5, 0xc2 },
++  { 0x65, 0x2a, 0x7e, 0xd8, 0xc6, 0x92, 0x42, 0x0e, 0xc3, 0xcb, 0x40, 0xed, 0xe6, 0x30, 0x9d, 0x7c },
++  { 0xf6, 0x99, 0xa2, 0x95, 0xa7, 0x98, 0xe5, 0x44, 0xb9, 0x32, 0x58, 0x6b, 0xea, 0x1f, 0x65, 0x61 },
++  { 0xac, 0xf2, 0xa1, 0xa9, 0x37, 0xe1, 0xaa, 0x81, 0x85, 0x81, 0xa1, 0x01, 0x2e, 0x2b, 0x4e, 0xf6 },
++  { 0x4f, 0xe8, 0xd6, 0x92, 0x26, 0xa5, 0x6e, 0xac, 0x75, 0x57, 0x3f, 0x7e, 0x13, 0x6c, 0xd4, 0x3d },
++  { 0x3a, 0xcb, 0xa8, 0x66, 0xf8, 0xf6, 0xde, 0xdd, 0x56, 0x83, 0x89, 0x3b, 0xfd, 0xf0, 0xd6, 0x9e },
++  { 0x44, 0x64, 0xa8, 0x70, 0x98, 0x42, 0x8d, 0xe6, 0xa2, 0x43, 0x3c, 0x7a, 0x82, 0x0e, 0x3e, 0x78 },
++  { 0x96, 0xd9, 0x5a, 0x8b, 0x4f, 0xba, 0x28, 0x67, 0x2d, 0xf7, 0xb5, 0xe7, 0x4a, 0xd4, 0x07, 0x9f },
++  { 0x35, 0x97, 0xdb, 0x77, 0x6f, 0x9e, 0x05, 0x4e, 0xa1, 0x86, 0x8f, 0x42, 0x74, 0xe7, 0xa4, 0x14 },
++  { 0xa8, 0x55, 0x57, 0x73, 0x13, 0x86, 0x22, 0xbb, 0x82, 0x67, 0x14, 0xb0, 0x11, 0x03, 0x74, 0xb7 },
++  { 0x73, 0x19, 0x78, 0xac, 0x75, 0xb0, 0x13, 0xe2, 0x93, 0xbd, 0x34, 0x54, 0x43, 0x52, 0x02, 0x74 },
++  { 0xf7, 0x60, 0xb8, 0x18, 0x3b, 0x51, 0xcf, 0xfb, 0x4d, 0xc4, 0x52, 0x8b, 0xc5, 0x92, 0xfd, 0xf6 },
++  { 0x5f, 0x90, 0x62, 0x93, 0x46, 0x21, 0xa3, 0xab, 0xbe, 0xb3, 0x92, 0xc7, 0xa4, 0x14, 0x58, 0x3c },
++  { 0x23, 0x04, 0xda, 0x58, 0xa4, 0x31, 0xbb, 0xcc, 0x36, 0x34, 0x40, 0xc7, 0x51, 0x83, 0x48, 0x60 },
++  { 0x96, 0x74, 0x4b, 0x9c, 0x11, 0x53, 0x9b, 0x93, 0x6d, 0x68, 0xf7, 0xe8, 0xd2, 0xa6, 0x7d, 0x09 },
++  { 0xdb, 0xe4, 0x08, 0x66, 0xf1, 0x1b, 0xb2, 0xc8, 0xf7, 0x84, 0xb4, 0xee, 0x29, 0x8c, 0x75, 0x4d },
++  { 0xa6, 0x66, 0x8f, 0xbd, 0xc0, 0x34, 0x76, 0x68, 0xe5, 0xbd, 0xb1, 0xe8, 0x5a, 0x8e, 0x32, 0x4d },
++  { 0xc0, 0xe6, 0x1d, 0x42, 0x59, 0x11, 0x7c, 0xb8, 0xf5, 0x8c, 0x2c, 0x44, 0x1e, 0x8c, 0xcf, 0xfb },
++  { 0xfd, 0x81, 0xeb, 0xd9, 0x16, 0x78, 0x1d, 0xfe, 0x18, 0x02, 0x92, 0x72, 0x17, 0xb6, 0x16, 0xe3 },
++  { 0x1e, 0x3b, 0x0b, 0x77, 0x6f, 0x6c, 0x21, 0x66, 0xc8, 0xa1, 0x44, 0x70, 0xd9, 0x67, 0xc2, 0xaf },
++  { 0xaa, 0x5a, 0x67, 0x0b, 0x5b, 0xd1, 0xa3, 0xab, 0x46, 0x99, 0xbb, 0x99, 0x3e, 0x09, 0x0a, 0x71 },
++  { 0x48, 0x11, 0x30, 0x58, 0xba, 0xda, 0x1a, 0x7d, 0x6a, 0x06, 0x5b, 0xc7, 0x5f, 0x85, 0xfb, 0x64 },
++  { 0xec, 0x7e, 0x20, 0x8f, 0x42, 0x3b, 0xbf, 0xd9, 0x49, 0x96, 0xa3, 0xd6, 0xd9, 0x7d, 0x80, 0xd3 },
++  { 0x85, 0x0c, 0x93, 0x58, 0x82, 0x08, 0x85, 0xe3, 0x0e, 0x14, 0xb9, 0x7a, 0x59, 0xa7, 0xd7, 0xee },
++  { 0x99, 0x10, 0xd5, 0x0d, 0x62, 0xd7, 0x7b, 0xe7, 0xb3, 0x4c, 0xb3, 0x75, 0x00, 0x0e, 0xc2, 0xc7 },
++  { 0xa8, 0xea, 0xc9, 0x4c, 0x1c, 0x37, 0x46, 0x50, 0x6c, 0xb3, 0x10, 0xaf, 0x68, 0xbe, 0xdd, 0xa7 },
++  { 0x12, 0xca, 0x6b, 0x11, 0xc6, 0xc9, 0x94, 0x17, 0x8e, 0xde, 0xf4, 0xb6, 0x8b, 0x54, 0x54, 0x18 },
++  { 0x0d, 0xee, 0x14, 0x73, 0x07, 0x9c, 0xe2, 0x2e, 0xa2, 0x92, 0x85, 0xfc, 0x5c, 0xae, 0xfe, 0xdf },
++  { 0xf8, 0xa6, 0x83, 0xe1, 0xa9, 0xad, 0xd3, 0xc1, 0xe2, 0x2f, 0xa0, 0xb8, 0x58, 0x3a, 0xab, 0xea },
++  { 0xde, 0x64, 0xa5, 0x73, 0xf1, 0x62, 0xea, 0xa5, 0xae, 0xac, 0x73, 0x5a, 0x47, 0x1e, 0x62, 0x1c },
++  { 0xa4, 0x17, 0xff, 0x7a, 0x00, 0xaa, 0xbb, 0x09, 0x08, 0xbc, 0xd1, 0xc1, 0xe1, 0x22, 0xb0, 0x20 },
++  { 0x74, 0xdd, 0x90, 0xc1, 0x40, 0xc5, 0x16, 0x70, 0x27, 0x0e, 0x70, 0x4c, 0xe0, 0x37, 0xf5, 0xd3 },
++  { 0x70, 0x7a, 0x8e, 0xdd, 0x44, 0x7b, 0x0a, 0x80, 0x5f, 0x5a, 0x12, 0x09, 0xdd, 0xb2, 0xd1, 0xca },
++  { 0xb2, 0xa7, 0x11, 0x5b, 0xa9, 0x74, 0x0a, 0xde, 0x0f, 0x33, 0xb9, 0x36, 0x22, 0x20, 0xc3, 0xce },
++  { 0x2a, 0x05, 0x95, 0x06, 0xf8, 0x7a, 0x77, 0x21, 0x18, 0xb0, 0xd3, 0x5d, 0x99, 0x0a, 0x2d, 0x78 },
++  { 0xb0, 0x22, 0xde, 0x68, 0x69, 0x9e, 0x60, 0x62, 0x92, 0xfc, 0xf1, 0xd2, 0xe4, 0xde, 0xdc, 0x60 },
++  { 0xc2, 0xf6, 0x38, 0x4f, 0x71, 0x24, 0xb8, 0xfb, 0x67, 0x28, 0xcf, 0x42, 0x73, 0xa7, 0x31, 0xd3 },
++  { 0x19, 0xd3, 0x5a, 0x9d, 0xc7, 0x38, 0x17, 0x89, 0x8a, 0x22, 0x2d, 0xc7, 0xbb, 0x6e, 0xe6, 0xcb },
++  { 0x53, 0x9c, 0x5e, 0x2c, 0xc5, 0xef, 0xb7, 0xa5, 0x82, 0x5f, 0xf3, 0x16, 0x43, 0x34, 0x0e, 0x15 },
++  { 0x29, 0x38, 0xf3, 0xc3, 0x95, 0x69, 0x72, 0x1f, 0x32, 0xf2, 0xc7, 0x53, 0x23, 0xfc, 0xf6, 0x24 },
++  { 0x44, 0xc2, 0x34, 0x76, 0x83, 0xb3, 0xad, 0x5a, 0x0d, 0x35, 0x61, 0x06, 0x3d, 0xd8, 0x3b, 0x2c },
++  { 0x39, 0x4c, 0xcf, 0x7c, 0x68, 0xf5, 0x4b, 0xe9, 0xa6, 0x99, 0x75, 0x95, 0xf6, 0x4b, 0x84, 0xbb },
++  { 0x1d, 0x48, 0x0f, 0x62, 0x6b, 0x93, 0x97, 0x1a, 0x4d, 0x61, 0xad, 0x56, 0x17, 0xa4, 0xf8, 0xc7 },
++  { 0xad, 0x45, 0xde, 0xf9, 0x80, 0x51, 0xd1, 0x38, 0xdf, 0xbd, 0x82, 0x95, 0xf6, 0x91, 0xad, 0x83 },
++  { 0x4d, 0x26, 0xbe, 0xee, 0x87, 0x45, 0xb1, 0x97, 0x93, 0x57, 0xda, 0x9e, 0x57, 0x13, 0xa5, 0x83 },
++  { 0xed, 0x59, 0x06, 0x9c, 0xf0, 0x89, 0x82, 0x21, 0x42, 0x55, 0x93, 0x58, 0x03, 0xa3, 0xb4, 0x11 },
++  { 0xb9, 0x82, 0xfe, 0x65, 0xf8, 0xa6, 0xe1, 0x54, 0xde, 0x5f, 0x5e, 0xd3, 0xff, 0xde, 0xaf, 0x01 },
++  { 0xb4, 0x11, 0xb3, 0x30, 0x2d, 0x35, 0xd0, 0xca, 0x58, 0x65, 0x75, 0xb7, 0x4e, 0x59, 0x15, 0xb7 },
++  { 0x1e, 0xea, 0x04, 0xdf, 0x11, 0x8e, 0x61, 0xea, 0x01, 0x65, 0x2d, 0x31, 0x9b, 0x50, 0x69, 0x8b },
++  { 0x87, 0x79, 0x18, 0x75, 0xc7, 0x92, 0xc6, 0x93, 0xc6, 0x86, 0x14, 0x54, 0xd2, 0x40, 0x01, 0x86 },
++  { 0x70, 0xef, 0x78, 0x69, 0x19, 0xe6, 0x8f, 0x11, 0x61, 0x09, 0x11, 0x11, 0x11, 0x00, 0x01, 0x10 },
++  { 0x40, 0x50, 0x55, 0x50, 0x15, 0x55, 0x05, 0x41, 0x54, 0x44, 0x50, 0x01, 0x04, 0x00, 0x00, 0x00 },
++  { 0xc8, 0xcf, 0xf7, 0x93, 0xae, 0x1c, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },
++  { 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xea, 0xca, 0x21, 0x00, 0x00, 0x00, 0x00, 0x00 },
++  { 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x87, 0x00, 0x00, 0x00 },
++  { 0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00 },
++  { 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },
++  { 0x11, 0x01, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },
++  { 0x15, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },
++  { 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },
++  { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },
++  { 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },
++  { 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },
++  { 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },
++  { 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },
++  { 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },
++  { 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }
+ };
+ #endif /* #ifdef FEATURE_MESSAGE_SECURITY_ASSIST_EXTENSION_4 */
+-#endif /* #ifdef __STATIC_FUNCTIONS__ */
++#endif /* #ifndef __STATIC_FUNCTIONS__ */
+ 
+ /*----------------------------------------------------------------------------*/
+ /* Needed functions from sha1.c and sha256.c.                                 */
+@@ -1569,7 +1669,6 @@
+   int parameter_blocklen;
+   int r1_is_not_r2;
+   int tfc;
+-  BYTE two[16] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2 };
+   int wrap;
+   BYTE *xts;
+ 
+@@ -1644,7 +1743,7 @@
+       message_block[i] ^= parameter_block[parameter_blocklen - 16 + i];
+ 
+     /* Calculate output XTS */
+-    gcm_gf_mult(xts, two, xts);
++    xts_mult_x(xts);
+ 
+     /* Store the output and XTS */
+     ARCH_DEP(vstorec)(message_block, 15, GR_A(r1, regs) & ADDRESS_MAXWRAP(regs), r1, regs);
+@@ -3545,7 +3644,7 @@
+   }
+ 
+   /* Calculate subkeys Kx and Ky */
+-  if(k[0] & 0x80)
++  if(!(k[0] & 0x80))
+     shift_left(k, k, 8);
+   else
+   {
+@@ -3555,7 +3654,7 @@
+   }
+   if(parameter_block[0] != 64)
+   {
+-    if(k[0] & 0x80)
++    if(!(k[0] & 0x80))
+       shift_left(k, k, 8);
+     else
+     {
+@@ -3565,6 +3664,10 @@
+     }
+   }
+ 
++#ifdef OPTION_PCC_DEBUG
++  LOGBYTE("Subkey:", k, 8);
++#endif /* #ifdef OPTION_PCC_DEBUG */
++
+   /* XOR with kx or ky and encrypt */
+   for(i = 0; i < 8; i++)
+   {
+@@ -3629,7 +3732,7 @@
+   tfc = GR0_tfc(regs);
+   wrap = GR0_wrap(regs);
+   keylen = (tfc - 17) * 8 + 8;
+-  parameter_blocklen = keylen + 24;
++  parameter_blocklen = keylen + 40;
+   if(wrap)
+     parameter_blocklen += 32;
+ 
+@@ -3691,7 +3794,7 @@
+   aes_encrypt(&context, k, k);
+ 
+   /* Calculate subkeys Kx and Ky */
+-  if(k[0] & 0x80)
++  if(!(k[0] & 0x80))
+     shift_left(k, k, 16);
+   else
+   {
+@@ -3701,7 +3804,7 @@
+   }
+   if(parameter_block[0] != 128)
+   {
+-    if(k[0] & 0x80)
++    if(!(k[0] & 0x80))
+       shift_left(k, k, 16);
+     else
+     {
+@@ -3711,6 +3814,10 @@
+     }
+   }
+ 
++#ifdef OPTION_PCC_DEBUG
++  LOGBYTE("Subkey:", k, 16);
++#endif /* #ifdef OPTION_PCC_DEBUG */
++
+   /* XOR with kx or ky and encrypt */
+   for(i = 0; i < 16; i++)
+   {
+@@ -3740,7 +3847,7 @@
+   BYTE *ibi;
+   int keylen;
+   BYTE mask[8] = { 0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01 };
+-  BYTE parameter_block[104];
++  BYTE parameter_block[128];
+   int parameter_blocklen;
+   int tfc;
+   BYTE *tweak;
+@@ -3792,13 +3899,16 @@
+     return;
+   }
+ 
++  /* Encrypt tweak */
++  aes_set_key(&context, parameter_block, keylen * 8);
++  aes_encrypt(&context, tweak, tweak);
++
+   /* Check block sequential number (j) == 0 */
+   if(!memcmp(bsn, zero, 16))
+   {
+     zeromem(ibi, 15);
+     ibi[15] = 128;
+-    zeromem(xts, 15);
+-    xts[15] = 1;
++    memcpy(xts, tweak, 16);
+   }
+   else
+   {
+@@ -3811,27 +3921,24 @@
+     }
+ 
+     /* Intitial execution? */
+-    if(!ibi[15])
+-    {
+-      zeromem(xts, 15);
+-      xts[15] = 1;
+-    }
++    if(!ibi[15]) memcpy(xts, tweak, 16);
+ 
+     /* Calculate xts parameter */
+     do
+     {
+       if(bsn[ibi[15] / 8] & mask[ibi[15] % 8])
+-        gcm_gf_mult(xts, exp_table[ibi[15]], xts);
++      {
++#ifdef OPTION_PCC_DEBUG
++        LOGBYTE("ibi   :", ibi, 16);
++        LOGBYTE("xts   :", xts, 16);
++#endif /* #ifdef OPTION_PCC_DEBUG */
++        xts_gf_mult(xts, exp_table[ibi[15]], xts);
++      }
+       ibi[15]++;
+     }
+     while(ibi[15] != 128);
+   }
+ 
+-  /* Encrypt tweak and multiply */
+-  aes_set_key(&context, parameter_block, keylen * 8);
+-  aes_encrypt(&context, tweak, tweak);
+-  gcm_gf_mult(xts, tweak, xts);
+-
+ #ifdef OPTION_PCC_DEBUG
+   LOGBYTE("ibi   :", ibi, 16);
+   LOGBYTE("xts   :", xts, 16);
+@@ -3947,18 +4054,16 @@
+     ARCH_DEP(program_interrupt)(regs, PGM_OPERATION_EXCEPTION);
+ 
+ #ifdef OPTION_KIMD_DEBUG
+-  WRGMSG_ON;
+-  WRGMSG(HHC90100, "D", "KIMD: compute intermediate message digest");
+-  WRGMSG(HHC90101, "D", 1, r1);
+-  WRGMSG(HHC90102, "D", regs->GR(r1));
+-  WRGMSG(HHC90101, "D", 2, r2);
+-  WRGMSG(HHC90102, "D", regs->GR(r2));
+-  WRGMSG(HHC90103, "D", regs->GR(r2 + 1));
+-  WRGMSG(HHC90104, "D", 0, regs->GR(0));
+-  WRGMSG(HHC90105, "D", TRUEFALSE(GR0_m(regs)));
+-  WRGMSG(HHC90106, "D", GR0_fc(regs));
+-  WRGMSG(HHC90104, "D", 1, regs->GR(1));
+-  WRGMSG_OFF;
++  WRMSG(HHC90100, "D", "KIMD: compute intermediate message digest");
++  WRMSG(HHC90101, "D", 1, r1);
++  WRMSG(HHC90102, "D", regs->GR(r1));
++  WRMSG(HHC90101, "D", 2, r2);
++  WRMSG(HHC90102, "D", regs->GR(r2));
++  WRMSG(HHC90103, "D", regs->GR(r2 + 1));
++  WRMSG(HHC90104, "D", 0, regs->GR(0));
++  WRMSG(HHC90105, "D", TRUEFALSE(GR0_m(regs)));
++  WRMSG(HHC90106, "D", GR0_fc(regs));
++  WRMSG(HHC90104, "D", 1, regs->GR(1));
+ #endif /* #ifdef OPTION_KIMD_DEBUG */
+ 
+   /* Check special conditions */
+@@ -4051,18 +4156,16 @@
+     ARCH_DEP(program_interrupt)(regs, PGM_OPERATION_EXCEPTION);
+ 
+ #ifdef OPTION_KLMD_DEBUG
+-  WRGMSG_ON;
+-  WRGMSG(HHC90100, "D", "KLMD: compute last message digest");
+-  WRGMSG(HHC90101, "D", 1, r1);
+-  WRGMSG(HHC90102, "D", regs->GR(r1));
+-  WRGMSG(HHC90101, "D", 2, r2);
+-  WRGMSG(HHC90102, "D", regs->GR(r2));
+-  WRGMSG(HHC90103, "D", regs->GR(r2 + 1));
+-  WRGMSG(HHC90104, "D", 0, regs->GR(0));
+-  WRGMSG(HHC90105, "D", TRUEFALSE(GR0_m(regs)));
+-  WRGMSG(HHC90106, "D", GR0_fc(regs));
+-  WRGMSG(HHC90104, "D", 1, regs->GR(1));
+-  WRGMSG_OFF;
++  WRMSG(HHC90100, "D", "KLMD: compute last message digest");
++  WRMSG(HHC90101, "D", 1, r1);
++  WRMSG(HHC90102, "D", regs->GR(r1));
++  WRMSG(HHC90101, "D", 2, r2);
++  WRMSG(HHC90102, "D", regs->GR(r2));
++  WRMSG(HHC90103, "D", regs->GR(r2 + 1));
++  WRMSG(HHC90104, "D", 0, regs->GR(0));
++  WRMSG(HHC90105, "D", TRUEFALSE(GR0_m(regs)));
++  WRMSG(HHC90106, "D", GR0_fc(regs));
++  WRMSG(HHC90104, "D", 1, regs->GR(1));
+ #endif /* #ifdef OPTION_KLMD_DEBUG */
+ 
+   /* Check special conditions */
+@@ -4143,18 +4246,16 @@
+     ARCH_DEP(program_interrupt)(regs, PGM_OPERATION_EXCEPTION);
+ 
+ #ifdef OPTION_KM_DEBUG
+-  WRGMSG_ON;
+-  WRGMSG(HHC90100, "D", "KM: cipher message");
+-  WRGMSG(HHC90101, "D", 1, r1);
+-  WRGMSG(HHC90102, "D", regs->GR(r1));
+-  WRGMSG(HHC90101, "D", 2, r2);
+-  WRGMSG(HHC90102, "D", regs->GR(r2));
+-  WRGMSG(HHC90103, "D", regs->GR(r2 + 1));
+-  WRGMSG(HHC90104, "D", 0, regs->GR(0));
+-  WRGMSG(HHC90107, "D", TRUEFALSE(GR0_m(regs)));
+-  WRGMSG(HHC90106, "D", GR0_fc(regs));
+-  WRGMSG(HHC90104, "D", 1, regs->GR(1));
+-  WRGMSG_OFF;
++  WRMSG(HHC90100, "D", "KM: cipher message");
++  WRMSG(HHC90101, "D", 1, r1);
++  WRMSG(HHC90102, "D", regs->GR(r1));
++  WRMSG(HHC90101, "D", 2, r2);
++  WRMSG(HHC90102, "D", regs->GR(r2));
++  WRMSG(HHC90103, "D", regs->GR(r2 + 1));
++  WRMSG(HHC90104, "D", 0, regs->GR(0));
++  WRMSG(HHC90107, "D", TRUEFALSE(GR0_m(regs)));
++  WRMSG(HHC90106, "D", GR0_fc(regs));
++  WRMSG(HHC90104, "D", 1, regs->GR(1));
+ #endif /* #ifdef OPTION_KM_DEBUG */
+ 
+   /* Check special conditions */
+@@ -4279,16 +4380,14 @@
+     ARCH_DEP(program_interrupt)(regs, PGM_OPERATION_EXCEPTION);
+ 
+ #ifdef OPTION_KMAC_DEBUG
+-  WRGMSG_ON;
+-  WRGMSG(HHC90100, "D", "KMAC: compute message authentication code");
+-  WRGMSG(HHC90101, "D", 2, r2);
+-  WRGMSG(HHC90102, "D", regs->GR(r2));
+-  WRGMSG(HHC90103, "D", regs->GR(r2 + 1));
+-  WRGMSG(HHC90104, "D", 0, regs->GR(0));
+-  WRGMSG(HHC90105, "D", TRUEFALSE(GR0_m(regs)));
+-  WRGMSG(HHC90106, "D", GR0_fc(regs));
+-  WRGMSG(HHC90104, "D", 1, regs->GR(1));
+-  WRGMSG_OFF;
++  WRMSG(HHC90100, "D", "KMAC: compute message authentication code");
++  WRMSG(HHC90101, "D", 2, r2);
++  WRMSG(HHC90102, "D", regs->GR(r2));
++  WRMSG(HHC90103, "D", regs->GR(r2 + 1));
++  WRMSG(HHC90104, "D", 0, regs->GR(0));
++  WRMSG(HHC90105, "D", TRUEFALSE(GR0_m(regs)));
++  WRMSG(HHC90106, "D", GR0_fc(regs));
++  WRMSG(HHC90104, "D", 1, regs->GR(1));
+ #endif /* #ifdef OPTION_KMAC_DEBUG */
+ 
+   /* Check special conditions */
+@@ -4379,18 +4478,16 @@
+     ARCH_DEP(program_interrupt)(regs, PGM_OPERATION_EXCEPTION);
+ 
+ #ifdef OPTION_KMC_DEBUG
+-  WRGMSG_ON;
+-  WRGMSG(HHC90100, "D", "KMC: cipher message with chaining");
+-  WRGMSG(HHC90101, "D", 1, r1);
+-  WRGMSG(HHC90102, "D", regs->GR(r1));
+-  WRGMSG(HHC90101, "D", 2, r2);
+-  WRGMSG(HHC90102, "D", regs->GR(r2));
+-  WRGMSG(HHC90103, "D", regs->GR(r2 + 1));
+-  WRGMSG(HHC90104, "D", 0, regs->GR(0));
+-  WRGMSG(HHC90107, "D", TRUEFALSE(GR0_m(regs)));
+-  WRGMSG(HHC90106, "D", GR0_fc(regs));
+-  WRGMSG(HHC90104, "D", 1, regs->GR(1));
+-  WRGMSG_OFF;
++  WRMSG(HHC90100, "D", "KMC: cipher message with chaining");
++  WRMSG(HHC90101, "D", 1, r1);
++  WRMSG(HHC90102, "D", regs->GR(r1));
++  WRMSG(HHC90101, "D", 2, r2);
++  WRMSG(HHC90102, "D", regs->GR(r2));
++  WRMSG(HHC90103, "D", regs->GR(r2 + 1));
++  WRMSG(HHC90104, "D", 0, regs->GR(0));
++  WRMSG(HHC90107, "D", TRUEFALSE(GR0_m(regs)));
++  WRMSG(HHC90106, "D", GR0_fc(regs));
++  WRMSG(HHC90104, "D", 1, regs->GR(1));
+ #endif /* #ifdef OPTION_KMC_DEBUG */
+ 
+   /* Check special conditions */
+@@ -4514,18 +4611,16 @@
+     ARCH_DEP(program_interrupt)(regs, PGM_OPERATION_EXCEPTION);
+ 
+ #ifdef OPTION_KMCTR_DEBUG
+-  WRGMSG_ON;
+-  WRGMSG(HHC90100, "D", "KMCTR: cipher message with counter");
+-  WRGMSG(HHC90101, "D", 1, r1);
+-  WRGMSG(HHC90102, "D", regs->GR(r1));
+-  WRGMSG(HHC90101, "D", 2, r2);
+-  WRGMSG(HHC90102, "D", regs->GR(r2));
+-  WRGMSG(HHC90103, "D", regs->GR(r2 + 1));
+-  WRGMSG(HHC90101, "D", 3, r3);
+-  WRGMSG(HHC90104, "D", 0, regs->GR(0));
+-  WRGMSG(HHC90106, "D", GR0_fc(regs));
+-  WRGMSG(HHC90104, "D", 1, regs->GR(1));
+-  WRGMSG_OFF;
++  WRMSG(HHC90100, "D", "KMCTR: cipher message with counter");
++  WRMSG(HHC90101, "D", 1, r1);
++  WRMSG(HHC90102, "D", regs->GR(r1));
++  WRMSG(HHC90101, "D", 2, r2);
++  WRMSG(HHC90102, "D", regs->GR(r2));
++  WRMSG(HHC90103, "D", regs->GR(r2 + 1));
++  WRMSG(HHC90101, "D", 3, r3);
++  WRMSG(HHC90104, "D", 0, regs->GR(0));
++  WRMSG(HHC90106, "D", GR0_fc(regs));
++  WRMSG(HHC90104, "D", 1, regs->GR(1));
+ #endif /* #ifdef OPTION_KMCTR_DEBUG */
+ 
+   /* Check special conditions */
+@@ -4606,19 +4701,17 @@
+     ARCH_DEP(program_interrupt)(regs, PGM_OPERATION_EXCEPTION);
+ 
+ #ifdef OPTION_KMF_DEBUG
+-  WRGMSG_ON;
+-  WRGMSG(HHC90100, "D", "KMF: cipher message with cipher feedback");
+-  WRGMSG(HHC90101, "D", 1, r1);
+-  WRGMSG(HHC90102, "D", regs->GR(r1));
+-  WRGMSG(HHC90101, "D", 2, r2);
+-  WRGMSG(HHC90102, "D", regs->GR(r2));
+-  WRGMSG(HHC90103, "D", regs->GR(r2 + 1));
+-  WRGMSG(HHC90104, "D", 0, regs->GR(0));
+-  WRGMSG(HHC90112, "D", GR0_lcfb(regs));
+-  WRGMSG(HHC90107, "D", TRUEFALSE(GR0_m(regs)));
+-  WRGMSG(HHC90106, "D", GR0_fc(regs));
+-  WRGMSG(HHC90104, "D", 1, regs->GR(1));
+-  WRGMSG_OFF;
++  WRMSG(HHC90100, "D", "KMF: cipher message with cipher feedback");
++  WRMSG(HHC90101, "D", 1, r1);
++  WRMSG(HHC90102, "D", regs->GR(r1));
++  WRMSG(HHC90101, "D", 2, r2);
++  WRMSG(HHC90102, "D", regs->GR(r2));
++  WRMSG(HHC90103, "D", regs->GR(r2 + 1));
++  WRMSG(HHC90104, "D", 0, regs->GR(0));
++  WRMSG(HHC90112, "D", GR0_lcfb(regs));
++  WRMSG(HHC90107, "D", TRUEFALSE(GR0_m(regs)));
++  WRMSG(HHC90106, "D", GR0_fc(regs));
++  WRMSG(HHC90104, "D", 1, regs->GR(1));
+ #endif /* #ifdef OPTION_KMF_DEBUG */
+ 
+   /* Check special conditions */
+@@ -4699,17 +4792,15 @@
+     ARCH_DEP(program_interrupt)(regs, PGM_OPERATION_EXCEPTION);
+ 
+ #ifdef OPTION_KMO_DEBUG
+-  WRGMSG_ON;
+-  WRGMSG(HHC90100, "D", "KMO: cipher message with output feedback");
+-  WRGMSG(HHC90101, "D", 1, r1);
+-  WRGMSG(HHC90102, "D", regs->GR(r1));
+-  WRGMSG(HHC90101, "D", 2, r2);
+-  WRGMSG(HHC90102, "D", regs->GR(r2));
+-  WRGMSG(HHC90103, "D", regs->GR(r2 + 1));
+-  WRGMSG(HHC90104, "D", 0, regs->GR(0));
+-  WRGMSG(HHC90106, "D", GR0_fc(regs));
+-  WRGMSG(HHC90104, "D", 1, regs->GR(1));
+-  WRGMSG_OFF;
++  WRMSG(HHC90100, "D", "KMO: cipher message with output feedback");
++  WRMSG(HHC90101, "D", 1, r1);
++  WRMSG(HHC90102, "D", regs->GR(r1));
++  WRMSG(HHC90101, "D", 2, r2);
++  WRMSG(HHC90102, "D", regs->GR(r2));
++  WRMSG(HHC90103, "D", regs->GR(r2 + 1));
++  WRMSG(HHC90104, "D", 0, regs->GR(0));
++  WRMSG(HHC90106, "D", GR0_fc(regs));
++  WRMSG(HHC90104, "D", 1, regs->GR(1));
+ #endif /* #ifdef OPTION_KMO_DEBUG */
+ 
+   /* Check special conditions */
+@@ -4770,101 +4861,66 @@
+ /*----------------------------------------------------------------------------*/
+ DEF_INST(perform_cryptographic_computation)
+ {
+-  int msa;
+-  BYTE query_bits[][16] =
++  int msa = get_msa(regs);
++  static const BYTE query_bits[][16] =
+   {
+-    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+-    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+-    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+-    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+     { 0xf0, 0x70, 0x38, 0x38, 0x00, 0x00, 0x28, 0x28, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }
+   };
+-  int r1;
+-  int r2;
+ 
+-  RRE(inst, regs, r1, r2);
++  UNREFERENCED(inst);              /* This operation has no operands */
++
++  INST_UPDATE_PSW(regs, 4, 4);        /* All operands implied        */
+ 
+-  msa = get_msa(regs);
+   if(msa < 4)
+     ARCH_DEP(program_interrupt)(regs, PGM_OPERATION_EXCEPTION);
++  else if (msa > 4) msa = 4;
+ 
+ #ifdef OPTION_PCC_DEBUG
+-  WRGMSG_ON;
+-  WRGMSG(HHC90100, "D", "PCC: perform cryptographic computation");
+-  WRGMSG(HHC90101, "D", 1, r1);
+-  WRGMSG(HHC90102, "D", regs->GR(r1));
+-  WRGMSG(HHC90101, "D", 2, r2);
+-  WRGMSG(HHC90102, "D", regs->GR(r2));
+-  WRGMSG(HHC90103, "D", regs->GR(r2 + 1));
+-  WRGMSG(HHC90104, "D", 0, regs->GR(0));
+-  WRGMSG(HHC90106, "D", GR0_fc(regs));
+-  WRGMSG(HHC90104, "D", 1, regs->GR(1));
+-  WRGMSG_OFF;
++  WRMSG(HHC90100, "D", "PCC: perform cryptographic computation");
++  WRMSG(HHC90104, "D", 0, regs->GR(0));
++  WRMSG(HHC90106, "D", GR0_fc(regs));
++  WRMSG(HHC90104, "D", 1, regs->GR(1));
+ #endif /* #ifdef OPTION_PCC_DEBUG */
+ 
+-  /* Check special conditions */
+-  if(unlikely(!r1 || r1 & 0x01 || !r2 || r2 & 0x01))
+-    ARCH_DEP(program_interrupt)(regs, PGM_SPECIFICATION_EXCEPTION);
+-
+   switch(GR0_fc(regs))
+   {
+     case 0: /* Query */
+-    {
+       /* Store the parameter block */
+-      ARCH_DEP(vstorec)(query_bits[msa], 15, GR_A(1, regs) & ADDRESS_MAXWRAP(regs), 1, regs);
++      ARCH_DEP(vstorec)(query_bits[msa - 4], 15, GR_A(1, regs) & ADDRESS_MAXWRAP(regs), 1, regs);
+ 
+ #ifdef OPTION_PCC_DEBUG
+-      LOGBYTE("output:", query_bits[msa], 16);
++      LOGBYTE("output:", query_bits[msa - 4], 16);
+ #endif /* #ifdef OPTION_PCC_DEBUG */
+ 
+       /* Set condition code 0 */
+       regs->psw.cc = 0;
+       return;
+-    }
+     case  1: /* dea */
+     case  2: /* tdea-128 */
+     case  3: /* tdea-192 */
+     case  9: /* encrypted dea */
+     case 10: /* encrypted tdea-128 */
+     case 11: /* encrypted tdea-192 */
+-    {
+-      if(msa >= 4)
+-        ARCH_DEP(pcc_cmac_dea)(regs);
+-      else
+-        ARCH_DEP(program_interrupt)(regs, PGM_SPECIFICATION_EXCEPTION);
++      ARCH_DEP(pcc_cmac_dea)(regs);
+       break;
+-    }
+     case 18: /* aes-128 */
+     case 19: /* aes-192 */
+     case 20: /* aes-256 */
+     case 26: /* encrypted aes-128 */
+     case 27: /* encrypted aes-192 */
+     case 28: /* encrypted aes-256 */
+-    {
+-      if(msa >= 4)
+-        ARCH_DEP(pcc_cmac_aes)(regs);
+-      else
+-        ARCH_DEP(program_interrupt)(regs, PGM_SPECIFICATION_EXCEPTION);
++      ARCH_DEP(pcc_cmac_aes)(regs);
+       break;
+-    }
+     case 50: /* aes-128 */
+     case 52: /* aes-256 */
+     case 58: /* encrypted aes-128 */
+     case 60: /* encrypted aes-256 */
+-    {
+-      if(msa >= 4)
+-        ARCH_DEP(pcc_xts_aes)(regs);
+-      else
+-        ARCH_DEP(program_interrupt)(regs, PGM_SPECIFICATION_EXCEPTION);
++      ARCH_DEP(pcc_xts_aes)(regs);
+       break;
+-    }
+     default:
+-    {
+       ARCH_DEP(program_interrupt)(regs, PGM_SPECIFICATION_EXCEPTION);
+       break;
+-    }
+   }
+-
+ }
+ #endif /* #ifdef FEATURE_MESSAGE_SECURITY_ASSIST_EXTENSION_4 */
+ 
+@@ -4894,13 +4950,11 @@
+     ARCH_DEP(program_interrupt)(regs, PGM_OPERATION_EXCEPTION);
+ 
+ #ifdef OPTION_PCKMO_DEBUG
+-  WRGMSG_ON;
+-  WRGMSG(HHC90100, "D", "PCKMO: perform cryptographic key management operation");
+-  WRGMSG(HHC90104, "D", 0, regs->GR(0));
+-  WRGMSG(HHC90105, "D", TRUEFALSE(GR0_m(regs)));
+-  WRGMSG(HHC90106, "D", GR0_fc(regs));
+-  WRGMSG(HHC90104, "D", 1, regs->GR(1));
+-  WRGMSG_OFF;
++  WRMSG(HHC90100, "D", "PCKMO: perform cryptographic key management operation");
++  WRMSG(HHC90104, "D", 0, regs->GR(0));
++  WRMSG(HHC90105, "D", TRUEFALSE(GR0_m(regs)));
++  WRMSG(HHC90106, "D", GR0_fc(regs));
++  WRMSG(HHC90104, "D", 1, regs->GR(1));
+ #endif /* #ifdef OPTION_PCKMO_DEBUG */
+ 
+   /* Privileged operation */
+@@ -4980,22 +5034,22 @@
+ 
+ HDL_INSTRUCTION_SECTION;
+ {
+-  HDL_DEFINST(HDL_INSTARCH_390 | HDL_INSTARCH_900, 0xb93e, compute_intermediate_message_digest);
+-  HDL_DEFINST(HDL_INSTARCH_390 | HDL_INSTARCH_900, 0xb93f, compute_last_message_digest);
+-  HDL_DEFINST(HDL_INSTARCH_390 | HDL_INSTARCH_900, 0xb92e, cipher_message);
+-  HDL_DEFINST(HDL_INSTARCH_390 | HDL_INSTARCH_900, 0xb91e, compute_message_authentication_code);
+-  HDL_DEFINST(HDL_INSTARCH_390 | HDL_INSTARCH_900, 0xb92f, cipher_message_with_chaining);
+-  HDL_DEFINST(HDL_INSTARCH_390 | HDL_INSTARCH_900, 0xb92d, cipher_message_with_counter);
+-  HDL_DEFINST(HDL_INSTARCH_390 | HDL_INSTARCH_900, 0xb92a, cipher_message_with_cipher_feedback);
+-  HDL_DEFINST(HDL_INSTARCH_390 | HDL_INSTARCH_900, 0xb92b, cipher_message_with_output_feedback);
+-  HDL_DEFINST(HDL_INSTARCH_390 | HDL_INSTARCH_900, 0xb92c, perform_cryptographic_computation);
+-  HDL_DEFINST(HDL_INSTARCH_390 | HDL_INSTARCH_900, 0xb928, perform_cryptographic_key_management_operation);
++  HDL_DEFINST(HDL_INSTARCH_370 | HDL_INSTARCH_390 | HDL_INSTARCH_900, 0xb93e, compute_intermediate_message_digest);
++  HDL_DEFINST(HDL_INSTARCH_370 | HDL_INSTARCH_390 | HDL_INSTARCH_900, 0xb93f, compute_last_message_digest);
++  HDL_DEFINST(HDL_INSTARCH_370 | HDL_INSTARCH_390 | HDL_INSTARCH_900, 0xb92e, cipher_message);
++  HDL_DEFINST(HDL_INSTARCH_370 | HDL_INSTARCH_390 | HDL_INSTARCH_900, 0xb91e, compute_message_authentication_code);
++  HDL_DEFINST(HDL_INSTARCH_370 | HDL_INSTARCH_390 | HDL_INSTARCH_900, 0xb92f, cipher_message_with_chaining);
++  HDL_DEFINST(HDL_INSTARCH_370 | HDL_INSTARCH_390 | HDL_INSTARCH_900, 0xb92d, cipher_message_with_counter);
++  HDL_DEFINST(HDL_INSTARCH_370 | HDL_INSTARCH_390 | HDL_INSTARCH_900, 0xb92a, cipher_message_with_cipher_feedback);
++  HDL_DEFINST(HDL_INSTARCH_370 | HDL_INSTARCH_390 | HDL_INSTARCH_900, 0xb92b, cipher_message_with_output_feedback);
++  HDL_DEFINST(HDL_INSTARCH_370 | HDL_INSTARCH_390 | HDL_INSTARCH_900, 0xb92c, perform_cryptographic_computation);
++  HDL_DEFINST(HDL_INSTARCH_370 | HDL_INSTARCH_390 | HDL_INSTARCH_900, 0xb928, perform_cryptographic_key_management_operation);
+ }
+ END_INSTRUCTION_SECTION;
+ 
+ HDL_REGISTER_SECTION;
+ {
+-  WRMSG(HHC00150, "I", "Crypto", " (c) Copyright 2003-2011 by Bernard van der Helm"); // Copyright notice
++  WRMSG(HHC00150, "I", "Crypto", " (c) Copyright 2003-2015 by Bernard van der Helm"); // Copyright notice
+   WRMSG(HHC00151, "I", "Message Security Assist"); // Feature notice
+ #ifdef FEATURE_MESSAGE_SECURITY_ASSIST_EXTENSION_4
+   WRMSG(HHC00151, "I", "Message Security Assist Extension 1, 2, 3 and 4"); // Feature notice
+--- a/crypto/sha256.c	2012-11-30 11:13:08.000000000 +0100
++++ b/crypto/sha256.c	2016-04-02 12:00:00.000000000 +0200
+@@ -495,7 +495,7 @@
+    *context->buffer = 0x80;
+   }
+   /* Set the bit count: */
+-  *(u_int64_t *)&context->buffer[SHA256_SHORT_BLOCK_LENGTH] = context->bitcount;
++  memcpy (&context->buffer[SHA256_SHORT_BLOCK_LENGTH], &context->bitcount, sizeof(u_int64_t));
+ 
+   /* Final transform: */
+   SHA256_Transform(context, context->buffer);
+@@ -787,8 +787,8 @@
+   *context->buffer = 0x80;
+  }
+  /* Store the length of input data (in bits): */
+- *(u_int64_t *)&context->buffer[SHA512_SHORT_BLOCK_LENGTH] = context->bitcount[1];
+- *(u_int64_t *)&context->buffer[SHA512_SHORT_BLOCK_LENGTH+8] = context->bitcount[0];
++ memcpy (&context->buffer[SHA512_SHORT_BLOCK_LENGTH],   &context->bitcount[1], sizeof(u_int64_t));
++ memcpy (&context->buffer[SHA512_SHORT_BLOCK_LENGTH+8], &context->bitcount[0], sizeof(u_int64_t));
+ 
+  /* Final transform: */
+  SHA512_Transform(context, context->buffer);
+--- a/esame.c	2012-11-30 11:13:08.000000000 +0100
++++ b/esame.c	2016-03-21 16:30:00.000000000 +0100
+@@ -1639,11 +1639,11 @@
+     {
+         FETCH_FW(regs->GR_L(r2), currpsw+4);
+ 
+-#if !defined(FEATURE_ESAME)
++#if !defined(FEATURE_ESAME) && __GEN_ARCH != 370
+         /* The Ninth Edition of ESA/390 POP (SA22-7201-08) requires
+            the low 31 bits to be set to zeroes in ESA/390 mode */
+         regs->GR_L(r2) &= 0x80000000;
+-#endif /*!defined(FEATURE_ESAME)*/
++#endif /*!defined(FEATURE_ESAME) && __GEN_ARCH != 370*/
+     }
+ 
+ } /* end DEF_INST(extract_psw) */
+@@ -1696,7 +1696,7 @@
+ #endif /*defined(FEATURE_ESAME_N3_ESA390) || defined(FEATURE_ESAME)*/
+ 
+ 
+-#if defined(FEATURE_ESAME)
++#if defined(FEATURE_EXTENDED_IMMEDIATE)
+ /*-------------------------------------------------------------------*/
+ /* A5x0 IIHH  - Insert Immediate High High                      [RI] */
+ /*-------------------------------------------------------------------*/
+@@ -1711,10 +1711,10 @@
+     regs->GR_HHH(r1) = i2;
+ 
+ } /* end DEF_INST(insert_immediate_high_high) */
+-#endif /*defined(FEATURE_ESAME)*/
++#endif /*defined(FEATURE_EXTENDED_IMMEDIATE)*/
+ 
+ 
+-#if defined(FEATURE_ESAME)
++#if defined(FEATURE_EXTENDED_IMMEDIATE)
+ /*-------------------------------------------------------------------*/
+ /* A5x1 IIHL  - Insert Immediate High Low                       [RI] */
+ /*-------------------------------------------------------------------*/
+@@ -1729,10 +1729,10 @@
+     regs->GR_HHL(r1) = i2;
+ 
+ } /* end DEF_INST(insert_immediate_high_low) */
+-#endif /*defined(FEATURE_ESAME)*/
++#endif /*defined(FEATURE_EXTENDED_IMMEDIATE)*/
+ 
+ 
+-#if defined(FEATURE_ESAME)
++#if defined(FEATURE_EXTENDED_IMMEDIATE)
+ /*-------------------------------------------------------------------*/
+ /* A5x2 IILH  - Insert Immediate Low High                       [RI] */
+ /*-------------------------------------------------------------------*/
+@@ -1747,10 +1747,10 @@
+     regs->GR_LHH(r1) = i2;
+ 
+ } /* end DEF_INST(insert_immediate_low_high) */
+-#endif /*defined(FEATURE_ESAME)*/
++#endif /*defined(FEATURE_EXTENDED_IMMEDIATE)*/
+ 
+ 
+-#if defined(FEATURE_ESAME)
++#if defined(FEATURE_EXTENDED_IMMEDIATE)
+ /*-------------------------------------------------------------------*/
+ /* A5x3 IILL  - Insert Immediate Low Low                        [RI] */
+ /*-------------------------------------------------------------------*/
+@@ -1765,10 +1765,10 @@
+     regs->GR_LHL(r1) = i2;
+ 
+ } /* end DEF_INST(insert_immediate_low_low) */
+-#endif /*defined(FEATURE_ESAME)*/
++#endif /*defined(FEATURE_EXTENDED_IMMEDIATE)*/
+ 
+ 
+-#if defined(FEATURE_ESAME)
++#if defined(FEATURE_EXTENDED_IMMEDIATE)
+ /*-------------------------------------------------------------------*/
+ /* A5x4 NIHH  - And Immediate High High                         [RI] */
+ /*-------------------------------------------------------------------*/
+@@ -1786,10 +1786,10 @@
+     regs->psw.cc = regs->GR_HHH(r1) ? 1 : 0;
+ 
+ } /* end DEF_INST(and_immediate_high_high) */
+-#endif /*defined(FEATURE_ESAME)*/
++#endif /*defined(FEATURE_EXTENDED_IMMEDIATE)*/
+ 
+ 
+-#if defined(FEATURE_ESAME)
++#if defined(FEATURE_EXTENDED_IMMEDIATE)
+ /*-------------------------------------------------------------------*/
+ /* A5x5 NIHL  - And Immediate High Low                          [RI] */
+ /*-------------------------------------------------------------------*/
+@@ -1807,10 +1807,10 @@
+     regs->psw.cc = regs->GR_HHL(r1) ? 1 : 0;
+ 
+ } /* end DEF_INST(and_immediate_high_low) */
+-#endif /*defined(FEATURE_ESAME)*/
++#endif /*defined(FEATURE_EXTENDED_IMMEDIATE)*/
+ 
+ 
+-#if defined(FEATURE_ESAME)
++#if defined(FEATURE_EXTENDED_IMMEDIATE)
+ /*-------------------------------------------------------------------*/
+ /* A5x6 NILH  - And Immediate Low High                          [RI] */
+ /*-------------------------------------------------------------------*/
+@@ -1828,10 +1828,10 @@
+     regs->psw.cc = regs->GR_LHH(r1) ? 1 : 0;
+ 
+ } /* end DEF_INST(and_immediate_low_high) */
+-#endif /*defined(FEATURE_ESAME)*/
++#endif /*defined(FEATURE_EXTENDED_IMMEDIATE)*/
+ 
+ 
+-#if defined(FEATURE_ESAME)
++#if defined(FEATURE_EXTENDED_IMMEDIATE)
+ /*-------------------------------------------------------------------*/
+ /* A5x7 NILL  - And Immediate Low Low                           [RI] */
+ /*-------------------------------------------------------------------*/
+@@ -1849,10 +1849,10 @@
+     regs->psw.cc = regs->GR_LHL(r1) ? 1 : 0;
+ 
+ } /* end DEF_INST(and_immediate_low_low) */
+-#endif /*defined(FEATURE_ESAME)*/
++#endif /*defined(FEATURE_EXTENDED_IMMEDIATE)*/
+ 
+ 
+-#if defined(FEATURE_ESAME)
++#if defined(FEATURE_EXTENDED_IMMEDIATE)
+ /*-------------------------------------------------------------------*/
+ /* A5x8 OIHH  - Or Immediate High High                          [RI] */
+ /*-------------------------------------------------------------------*/
+@@ -1870,10 +1870,10 @@
+     regs->psw.cc = regs->GR_HHH(r1) ? 1 : 0;
+ 
+ } /* end DEF_INST(or_immediate_high_high) */
+-#endif /*defined(FEATURE_ESAME)*/
++#endif /*defined(FEATURE_EXTENDED_IMMEDIATE)*/
+ 
+ 
+-#if defined(FEATURE_ESAME)
++#if defined(FEATURE_EXTENDED_IMMEDIATE)
+ /*-------------------------------------------------------------------*/
+ /* A5x9 OIHL  - Or Immediate High Low                           [RI] */
+ /*-------------------------------------------------------------------*/
+@@ -1891,10 +1891,10 @@
+     regs->psw.cc = regs->GR_HHL(r1) ? 1 : 0;
+ 
+ } /* end DEF_INST(or_immediate_high_low) */
+-#endif /*defined(FEATURE_ESAME)*/
++#endif /*defined(FEATURE_EXTENDED_IMMEDIATE)*/
+ 
+ 
+-#if defined(FEATURE_ESAME)
++#if defined(FEATURE_EXTENDED_IMMEDIATE)
+ /*-------------------------------------------------------------------*/
+ /* A5xA OILH  - Or Immediate Low High                           [RI] */
+ /*-------------------------------------------------------------------*/
+@@ -1912,10 +1912,10 @@
+     regs->psw.cc = regs->GR_LHH(r1) ? 1 : 0;
+ 
+ } /* end DEF_INST(or_immediate_low_high) */
+-#endif /*defined(FEATURE_ESAME)*/
++#endif /*defined(FEATURE_EXTENDED_IMMEDIATE)*/
+ 
+ 
+-#if defined(FEATURE_ESAME)
++#if defined(FEATURE_EXTENDED_IMMEDIATE)
+ /*-------------------------------------------------------------------*/
+ /* A5xB OILL  - Or Immediate Low Low                            [RI] */
+ /*-------------------------------------------------------------------*/
+@@ -1933,10 +1933,10 @@
+     regs->psw.cc = regs->GR_LHL(r1) ? 1 : 0;
+ 
+ } /* end DEF_INST(or_immediate_low_low) */
+-#endif /*defined(FEATURE_ESAME)*/
++#endif /*defined(FEATURE_EXTENDED_IMMEDIATE)*/
+ 
+ 
+-#if defined(FEATURE_ESAME)
++#if defined(FEATURE_EXTENDED_IMMEDIATE)
+ /*-------------------------------------------------------------------*/
+ /* A5xC LLIHH - Load Logical Immediate High High                [RI] */
+ /*-------------------------------------------------------------------*/
+@@ -1951,10 +1951,10 @@
+     regs->GR_G(r1) = (U64)i2 << 48;
+ 
+ } /* end DEF_INST(load_logical_immediate_high_high) */
+-#endif /*defined(FEATURE_ESAME)*/
++#endif /*defined(FEATURE_EXTENDED_IMMEDIATE)*/
+ 
+ 
+-#if defined(FEATURE_ESAME)
++#if defined(FEATURE_EXTENDED_IMMEDIATE)
+ /*-------------------------------------------------------------------*/
+ /* A5xD LLIHL - Load Logical Immediate High Low                 [RI] */
+ /*-------------------------------------------------------------------*/
+@@ -1969,10 +1969,10 @@
+     regs->GR_G(r1) = (U64)i2 << 32;
+ 
+ } /* end DEF_INST(load_logical_immediate_high_low) */
+-#endif /*defined(FEATURE_ESAME)*/
++#endif /*defined(FEATURE_EXTENDED_IMMEDIATE)*/
+ 
+ 
+-#if defined(FEATURE_ESAME)
++#if defined(FEATURE_EXTENDED_IMMEDIATE)
+ /*-------------------------------------------------------------------*/
+ /* A5xE LLILH - Load Logical Immediate Low High                 [RI] */
+ /*-------------------------------------------------------------------*/
+@@ -1987,10 +1987,10 @@
+     regs->GR_G(r1) = (U64)i2 << 16;
+ 
+ } /* end DEF_INST(load_logical_immediate_low_high) */
+-#endif /*defined(FEATURE_ESAME)*/
++#endif /*defined(FEATURE_EXTENDED_IMMEDIATE)*/
+ 
+ 
+-#if defined(FEATURE_ESAME)
++#if defined(FEATURE_EXTENDED_IMMEDIATE)
+ /*-------------------------------------------------------------------*/
+ /* A5xF LLILL - Load Logical Immediate Low Low                  [RI] */
+ /*-------------------------------------------------------------------*/
+@@ -2005,7 +2005,7 @@
+     regs->GR_G(r1) = (U64)i2;
+ 
+ } /* end DEF_INST(load_logical_immediate_low_low) */
+-#endif /*defined(FEATURE_ESAME)*/
++#endif /*defined(FEATURE_EXTENDED_IMMEDIATE)*/
+ 
+ 
+ #if defined(FEATURE_ESAME_N3_ESA390) || defined(FEATURE_ESAME)
+@@ -4510,6 +4510,7 @@
+ 
+     UNREFERENCED(inst);
+ 
++#if __GEN_ARCH != 370
+     /* Set the bear register */
+     SET_BEAR_REG(regs, regs->bear_ip);
+ 
+@@ -4528,6 +4529,7 @@
+ #endif /*defined(FEATURE_ESAME)*/
+                         regs->psw.amode = 0;
+     regs->psw.AMASK = AMASK24;
++#endif /*__GEN_ARCH != 370*/
+ 
+ } /* end DEF_INST(set_addressing_mode_24) */
+ #endif /*defined(FEATURE_ESAME_N3_ESA390) || defined(FEATURE_ESAME)*/
+@@ -4543,6 +4545,7 @@
+ 
+     E(inst, regs);
+ 
++#if __GEN_ARCH != 370
+     UNREFERENCED(inst);
+ 
+ 
+@@ -4564,6 +4567,7 @@
+ #endif /*defined(FEATURE_ESAME)*/
+     regs->psw.amode = 1;
+     regs->psw.AMASK = AMASK31;
++#endif /*__GEN_ARCH != 370*/
+ 
+ } /* end DEF_INST(set_addressing_mode_31) */
+ #endif /*defined(FEATURE_ESAME_N3_ESA390) || defined(FEATURE_ESAME)*/
+--- a/feat370.h	2012-11-30 11:13:08.000000000 +0100
++++ b/feat370.h	2016-03-02 17:30:00.000000000 +0100
+@@ -68,7 +68,13 @@
+ #define FEATURE_MESSAGE_SECURITY_ASSIST_EXTENSION_3
+ #define FEATURE_MESSAGE_SECURITY_ASSIST_EXTENSION_4
+ #define FEATURE_PARSING_ENHANCEMENT_FACILITY
+-//#define FEATURE_FLOATING_POINT_EXTENSION_FACILITY
++#define FEATURE_IEEE_EXCEPTION_SIMULATION
++#define FEATURE_FPS_EXTENSIONS
++#define FEATURE_FPS_ENHANCEMENT
++#define FEATURE_LOAD_STORE_ON_CONDITION_FACILITY
++#define FEATURE_DISTINCT_OPERANDS_FACILITY
++#define FEATURE_COMPARE_AND_SWAP_AND_STORE
++#define FEATURE_INTERLOCKED_ACCESS_FACILITY
+ 
+ #endif /* defined(OPTION_370_EXTENSION) */
+ 
+--- a/feat390.h	2012-11-30 11:13:08.000000000 +0100
++++ b/feat390.h	2016-02-21 22:00:00.000000000 +0100
+@@ -31,6 +31,8 @@
+ #define FEATURE_EMULATE_VM
+ #define FEATURE_ETF2_ENHANCEMENT                                /*@ZA*/
+ #define FEATURE_ETF3_ENHANCEMENT                                /*@ZA*/
++#define FEATURE_EXECUTE_EXTENSIONS_FACILITY                     /*208*/
++#define FEATURE_EXTENDED_IMMEDIATE
+ #define FEATURE_EXPANDED_STORAGE
+ #define FEATURE_EXPEDITED_SIE_SUBSET
+ #define FEATURE_EXTENDED_STORAGE_KEYS
+--- a/general1.c	2012-11-30 11:13:08.000000000 +0100
++++ b/general1.c	2016-03-21 16:30:00.000000000 +0100
+@@ -531,7 +531,7 @@
+ } /* end DEF_INST(branch_and_save) */
+ 
+ 
+-#if defined(FEATURE_BIMODAL_ADDRESSING)
++#if defined(FEATURE_BIMODAL_ADDRESSING) || __GEN_ARCH == 370
+ /*-------------------------------------------------------------------*/
+ /* 0C   BASSM - Branch and Save and Set Mode                    [RR] */
+ /*-------------------------------------------------------------------*/
+@@ -539,7 +539,9 @@
+ {
+ int     r1, r2;                         /* Values of R fields        */
+ VADR    newia;                          /* New instruction address   */
++#if __GEN_ARCH != 370
+ int     xmode;                          /* 64 or 31 mode of target   */
++#endif /*__GEN_ARCH != 370*/
+ #if defined(FEATURE_ESAME)
+ BYTE    *ipsav;                         /* save for ip               */
+ #endif /*defined(FEATURE_ESAME)*/
+@@ -593,17 +595,19 @@
+     /* Set mode and branch to address specified by R2 operand */
+     if ( r2 != 0 )
+     {
++#if __GEN_ARCH != 370
+         SET_ADDRESSING_MODE(regs, newia);
++#endif /*__GEN_ARCH != 370*/
+         SUCCESSFUL_BRANCH(regs, newia, 2);
+     }
+     else
+         INST_UPDATE_PSW(regs, 2, 0);
+ 
+ } /* end DEF_INST(branch_and_save_and_set_mode) */
+-#endif /*defined(FEATURE_BIMODAL_ADDRESSING)*/
++#endif /*defined(FEATURE_BIMODAL_ADDRESSING) || __GEN_ARCH == 370*/
+ 
+ 
+-#if defined(FEATURE_BIMODAL_ADDRESSING)
++#if defined(FEATURE_BIMODAL_ADDRESSING) || __GEN_ARCH == 370
+ /*-------------------------------------------------------------------*/
+ /* 0B   BSM   - Branch and Set Mode                             [RR] */
+ /*-------------------------------------------------------------------*/
+@@ -650,14 +654,16 @@
+     /* Set mode and branch to address specified by R2 operand */
+     if ( r2 != 0 )
+     {
++#if __GEN_ARCH != 370
+         SET_ADDRESSING_MODE(regs, newia);
++#endif /*__GEN_ARCH != 370*/
+         SUCCESSFUL_BRANCH(regs, newia, 2);
+     }
+     else
+         INST_UPDATE_PSW(regs, 2, 0);
+ 
+ } /* end DEF_INST(branch_and_set_mode) */
+-#endif /*defined(FEATURE_BIMODAL_ADDRESSING)*/
++#endif /*defined(FEATURE_BIMODAL_ADDRESSING) || __GEN_ARCH == 370*/
+ 
+ 
+ /*-------------------------------------------------------------------*/
+@@ -2168,11 +2174,19 @@
+ #if defined(FEATURE_COMPARE_AND_SWAP_AND_STORE)
+ 
+ #if defined(FEATURE_COMPARE_AND_SWAP_AND_STORE_FACILITY_2)
++#ifndef MAX_CSST_FC
+ #define MAX_CSST_FC 2
++#endif /*#ifndef MAX_CSST_FC*/
++#ifndef MAX_CSST_SC
+ #define MAX_CSST_SC 4
++#endif /*#ifndef MAX_CSST_SC*/
+ #else
++#ifndef MAX_CSST_FC
+ #define MAX_CSST_FC 1
++#endif /*#ifndef MAX_CSST_FC*/
++#ifndef MAX_CSST_SC
+ #define MAX_CSST_SC 3
++#endif /*#ifndef MAX_CSST_SC*/
+ #endif
+ 
+ /*-------------------------------------------------------------------*/
+@@ -2187,11 +2201,13 @@
+ VADR    addrp;                          /* Parameter list address    */
+ BYTE   *main1;                          /* Mainstor address of op1   */
+ int     ln2;                            /* Second operand length - 1 */
++#if defined(FEATURE_COMPARE_AND_SWAP_AND_STORE_FACILITY_2)
+ U64     old16l=0, old16h=0,
+-        new16l=0, new16h=0;             /* swap values for cmpxchg16 */
++        new16l=0, new16h=0,             /* swap values for cmpxchg16 */
++        stv16h=0,stv16l=0;              /* 16-byte store value pair  */
++#endif /*#if defined(FEATURE_COMPARE_AND_SWAP_AND_STORE_FACILITY_2)*/
+ U64     old8=0, new8=0;                 /* Swap values for cmpxchg8  */
+ U32     old4=0, new4=0;                 /* Swap values for cmpxchg4  */
+-U64     stv16h=0,stv16l=0;              /* 16-byte store value pair  */
+ U64     stv8=0;                         /* 8-byte store value        */
+ U32     stv4=0;                         /* 4-byte store value        */
+ U16     stv2=0;                         /* 2-byte store value        */
+@@ -2235,7 +2251,7 @@
+     }
+ 
+ #if defined(FEATURE_COMPARE_AND_SWAP_AND_STORE_FACILITY_2)
+-    if(r3 & 1)
++    if((r3 & 1) && (fc == 2))
+     {
+         regs->program_interrupt (regs, PGM_SPECIFICATION_EXCEPTION);
+     }
+--- a/general2.c	2012-11-30 11:13:08.000000000 +0100
++++ b/general2.c	2016-03-21 16:30:00.000000000 +0100
+@@ -2223,10 +2223,10 @@
+ 
+     /* Write and commit registers */
+     ARCH_DEP(vstorec)(utf32, 3, dest, r1, regs);
+-    SET_GR_A(r1, regs, (dest + 4) & ADDRESS_MAXWRAP(regs));
+-    SET_GR_A(r1 + 1, regs, destlen - 4);
+-    SET_GR_A(r2, regs, (srce + read) & ADDRESS_MAXWRAP(regs));
+-    SET_GR_A(r2 + 1, regs, srcelen - read);
++    SET_GR_A(r1, regs, (dest += 4) & ADDRESS_MAXWRAP(regs));
++    SET_GR_A(r1 + 1, regs, destlen -= 4);
++    SET_GR_A(r2, regs, (srce += read) & ADDRESS_MAXWRAP(regs));
++    SET_GR_A(r2 + 1, regs, srcelen -= read);
+ 
+     xlated += read;
+   }
+@@ -2340,10 +2340,10 @@
+ 
+     /* Write and commit registers */
+     ARCH_DEP(vstorec)(utf32, 3, dest, r1, regs);
+-    SET_GR_A(r1, regs, (dest + 4) & ADDRESS_MAXWRAP(regs));
+-    SET_GR_A(r1 + 1, regs, destlen - 4);
+-    SET_GR_A(r2, regs, (srce + read) & ADDRESS_MAXWRAP(regs));
+-    SET_GR_A(r2 + 1, regs, srcelen - read);
++    SET_GR_A(r1, regs, (dest += 4) & ADDRESS_MAXWRAP(regs));
++    SET_GR_A(r1 + 1, regs, destlen -= 4);
++    SET_GR_A(r2, regs, (srce += read) & ADDRESS_MAXWRAP(regs));
++    SET_GR_A(r2 + 1, regs, srcelen -= read);
+ 
+     xlated += read;
+   }
+@@ -2476,10 +2476,10 @@
+ 
+     /* Write and commit registers */
+     ARCH_DEP(vstorec)(utf8, write - 1, dest, r1, regs);
+-    SET_GR_A(r1, regs, (dest + write) & ADDRESS_MAXWRAP(regs));
+-    SET_GR_A(r1 + 1, regs, destlen - write);
+-    SET_GR_A(r2, regs, (srce + 4) & ADDRESS_MAXWRAP(regs));
+-    SET_GR_A(r2 + 1, regs, srcelen - 4);
++    SET_GR_A(r1, regs, (dest += write) & ADDRESS_MAXWRAP(regs));
++    SET_GR_A(r1 + 1, regs, destlen -= write);
++    SET_GR_A(r2, regs, (srce += 4) & ADDRESS_MAXWRAP(regs));
++    SET_GR_A(r2 + 1, regs, srcelen -= 4);
+ 
+     xlated += 4;
+   }
+@@ -2573,10 +2573,10 @@
+ 
+     /* Write and commit registers */
+     ARCH_DEP(vstorec)(utf16, write - 1, dest, r1, regs);
+-    SET_GR_A(r1, regs, (dest + write) & ADDRESS_MAXWRAP(regs));
+-    SET_GR_A(r1 + 1, regs, destlen - write);
+-    SET_GR_A(r2, regs, (srce + 4) & ADDRESS_MAXWRAP(regs));
+-    SET_GR_A(r2 + 1, regs, srcelen - 4);
++    SET_GR_A(r1, regs, (dest += write) & ADDRESS_MAXWRAP(regs));
++    SET_GR_A(r1 + 1, regs, destlen -= write);
++    SET_GR_A(r2, regs, (srce += 4) & ADDRESS_MAXWRAP(regs));
++    SET_GR_A(r2 + 1, regs, srcelen -= 4);
+ 
+     xlated += 4;
+   }
+--- a/general3.c	2012-11-30 11:13:08.000000000 +0100
++++ b/general3.c	2016-03-21 16:30:00.000000000 +0100
+@@ -2916,7 +2916,7 @@
+     RRF_M(inst, regs, r1, r2, m3);
+ 
+     /* Test M3 mask bit corresponding to condition code */
+-    if (m3 & (0x80 >> regs->psw.cc))
++    if (m3 & (0x8 >> regs->psw.cc))
+     {
+         /* Copy R2 register bits 32-63 to R1 register */
+         regs->GR_L(r1) = regs->GR_L(r2);
+@@ -2937,7 +2937,7 @@
+     RRF_M(inst, regs, r1, r2, m3);
+ 
+     /* Test M3 mask bit corresponding to condition code */
+-    if (m3 & (0x80 >> regs->psw.cc))
++    if (m3 & (0x8 >> regs->psw.cc))
+     {
+         /* Copy R2 register bits 0-63 to R1 register */
+         regs->GR_G(r1) = regs->GR_G(r2);
+@@ -2960,7 +2960,7 @@
+     RSY(inst, regs, r1, m3, b2, effective_addr2);
+ 
+     /* Test M3 mask bit corresponding to condition code */
+-    if (m3 & (0x80 >> regs->psw.cc))
++    if (m3 & (0x8 >> regs->psw.cc))
+     {
+         /* Load R1 register bits 32-63 from second operand */
+         regs->GR_L(r1) = ARCH_DEP(vfetch4) ( effective_addr2, b2, regs );
+@@ -2983,7 +2983,7 @@
+     RSY(inst, regs, r1, m3, b2, effective_addr2);
+ 
+     /* Test M3 mask bit corresponding to condition code */
+-    if (m3 & (0x80 >> regs->psw.cc))
++    if (m3 & (0x8 >> regs->psw.cc))
+     {
+         /* Load R1 register bits 0-63 from second operand */
+         regs->GR_G(r1) = ARCH_DEP(vfetch8) ( effective_addr2, b2, regs );
+@@ -3006,7 +3006,7 @@
+     RSY(inst, regs, r1, m3, b2, effective_addr2);
+ 
+     /* Test M3 mask bit corresponding to condition code */
+-    if (m3 & (0x80 >> regs->psw.cc))
++    if (m3 & (0x8 >> regs->psw.cc))
+     {
+         /* Store R1 register bits 32-63 at operand address */
+         ARCH_DEP(vstore4) ( regs->GR_L(r1), effective_addr2, b2, regs );
+@@ -3029,7 +3029,7 @@
+     RSY(inst, regs, r1, m3, b2, effective_addr2);
+ 
+     /* Test M3 mask bit corresponding to condition code */
+-    if (m3 & (0x80 >> regs->psw.cc))
++    if (m3 & (0x8 >> regs->psw.cc))
+     {
+         /* Store R1 register bits 0-63 at operand address */
+         ARCH_DEP(vstore8) ( regs->GR_G(r1), effective_addr2, b2, regs );
+--- a/hdl.c	2012-11-30 11:13:08.000000000 +0100
++++ b/hdl.c	2016-03-27 20:30:00.000000000 +0200
+@@ -16,7 +16,9 @@
+ #if defined(OPTION_DYNAMIC_LOAD)
+ HDLPRE hdl_preload[] = {
+     { "hdteq",          HDL_LOAD_NOMSG },
++#if defined(OPTION_PRELOAD_DYNCRYPT)
+     { "dyncrypt",       HDL_LOAD_NOMSG },
++#endif /*#if defined(OPTION_PRELOAD_DYNCRYPT)*/
+ #if 0
+     { "dyn_test1",      HDL_LOAD_DEFAULT },
+     { "dyn_test2",      HDL_LOAD_NOMSG },
+--- a/opcode.c	2015-01-17 17:30:00.000000000 +0100
++++ b/opcode.c	2016-03-27 20:30:00.000000000 +0200
+@@ -147,10 +147,10 @@
+ #endif /*!defined(FEATURE_BROADCASTED_PURGING)*/
+ 
+ 
+-#if !defined(FEATURE_BIMODAL_ADDRESSING)
++#if !defined(FEATURE_BIMODAL_ADDRESSING) && __GEN_ARCH != 370
+  UNDEF_INST(branch_and_set_mode)
+  UNDEF_INST(branch_and_save_and_set_mode)
+-#endif /*!defined(FEATURE_BIMODAL_ADDRESSING)*/
++#endif /*!defined(FEATURE_BIMODAL_ADDRESSING) && __GEN_ARCH != 370*/
+ 
+ 
+ #if !defined(FEATURE_MOVE_PAGE_FACILITY_2)
+@@ -971,6 +971,9 @@
+  UNDEF_INST(subtract_logical_borrow_register)
+  UNDEF_INST(test_addressing_mode)
+ #endif /*!defined(FEATURE_ESAME_N3_ESA390) && !defined(FEATURE_ESAME)*/
++#if !defined(FEATURE_ESAME)
++ UNDEF_INST(set_addressing_mode_64)
++#endif /*!defined(FEATURE_ESAME)*/
+ 
+ 
+ #if !defined(FEATURE_STORE_FACILITY_LIST)
+@@ -1113,6 +1116,22 @@
+  UNDEF_INST(exclusive_or_immediate_low_fullword)                /*@Z9*/
+  UNDEF_INST(insert_immediate_high_fullword)                     /*@Z9*/
+  UNDEF_INST(insert_immediate_low_fullword)                      /*@Z9*/
++ UNDEF_INST(insert_immediate_high_high);
++ UNDEF_INST(insert_immediate_high_low);
++ UNDEF_INST(insert_immediate_low_high);
++ UNDEF_INST(insert_immediate_low_low);
++ UNDEF_INST(and_immediate_high_high);
++ UNDEF_INST(and_immediate_high_low);
++ UNDEF_INST(and_immediate_low_high);
++ UNDEF_INST(and_immediate_low_low);
++ UNDEF_INST(or_immediate_high_high);
++ UNDEF_INST(or_immediate_high_low);
++ UNDEF_INST(or_immediate_low_high);
++ UNDEF_INST(or_immediate_low_low);
++ UNDEF_INST(load_logical_immediate_high_high);
++ UNDEF_INST(load_logical_immediate_high_low);
++ UNDEF_INST(load_logical_immediate_low_high);
++ UNDEF_INST(load_logical_immediate_low_low);
+  UNDEF_INST(load_long_fullword_immediate)                       /*@Z9*/
+  UNDEF_INST(load_logical_immediate_high_fullword)               /*@Z9*/
+  UNDEF_INST(load_logical_immediate_low_fullword)                /*@Z9*/
+@@ -1849,24 +1868,32 @@
+   {
+     case 0xe3:
+     {
++#ifdef OPTION_OPTINST
++      oldinst = runtime_opcode_e3_0______xx[arch][opcode2];
++      runtime_opcode_e3_0______xx[arch][opcode2] = inst;
++#endif /* #ifdef OPTION_OPTINST */
+       oldinst = runtime_opcode_e3________xx[arch][opcode2];
+       runtime_opcode_e3________xx[arch][opcode2] = inst;
+     }
++    break;
+     case 0xeb:
+     {
+       oldinst = runtime_opcode_eb________xx[arch][opcode2];
+       runtime_opcode_eb________xx[arch][opcode2] = inst;
+     }
++    break;
+     case 0xec:
+     {
+       oldinst = runtime_opcode_ec________xx[arch][opcode2];
+       runtime_opcode_ec________xx[arch][opcode2] = inst;
+     }
++    break;
+     case 0xed:
+     {
+       oldinst = runtime_opcode_ed________xx[arch][opcode2];
+       runtime_opcode_ed________xx[arch][opcode2] = inst;
+     }
++    break;
+     default:
+     {
+       oldinst = NULL;
+@@ -1889,36 +1916,151 @@
+   switch(opcode1)
+   {
+     case 0x01:
++    {
++      return(replace_opcode_xxxx(arch, inst, opcode1, opcode2));
++    }
+     case 0xa4:
++    case 0xa5:
++    {
++      if((arch == ARCH_900) || (arch == ARCH_370))
++        return(replace_opcode_xx_x(arch, inst, opcode1, opcode2));
++      return(replace_opcode_xxxx(arch, inst, opcode1, opcode2));
++    }
+     case 0xa6:
++    case 0xa7:
++    {
++#ifdef OPTION_OPTINST
++      switch(opcode2)
++      {
++        case 0x04:
++        {
++          return(replace_opcode_xxxx(arch, inst, 0xa7, 0x04));
++        }
++        case 0x14:
++        {
++          return(replace_opcode_xxxx(arch, inst, 0xa7, 0x14));
++        }
++        case 0x24:
++        {
++          return(replace_opcode_xxxx(arch, inst, 0xa7, 0x24));
++        }
++        case 0x34:
++        {
++          return(replace_opcode_xxxx(arch, inst, 0xa7, 0x34));
++        }
++        case 0x44:
++        {
++          return(replace_opcode_xxxx(arch, inst, 0xa7, 0x44));
++        }
++        case 0x54:
++        {
++          return(replace_opcode_xxxx(arch, inst, 0xa7, 0x54));
++        }
++        case 0x64:
++        {
++          return(replace_opcode_xxxx(arch, inst, 0xa7, 0x64));
++        }
++        case 0x74:
++        {
++          return(replace_opcode_xxxx(arch, inst, 0xa7, 0x74));
++        }
++        case 0x84:
++        {
++          return(replace_opcode_xxxx(arch, inst, 0xa7, 0x84));
++        }
++        case 0x94:
++        {
++          return(replace_opcode_xxxx(arch, inst, 0xa7, 0x94));
++        }
++        case 0xa4:
++        {
++          return(replace_opcode_xxxx(arch, inst, 0xa7, 0xa4));
++        }
++        case 0xb4:
++        {
++          return(replace_opcode_xxxx(arch, inst, 0xa7, 0xb4));
++        }
++        case 0xc4:
++        {
++          return(replace_opcode_xxxx(arch, inst, 0xa7, 0xc4));
++        }
++        case 0xd4:
++        {
++          return(replace_opcode_xxxx(arch, inst, 0xa7, 0xd4));
++        }
++        case 0xe4:
++        {
++          return(replace_opcode_xxxx(arch, inst, 0xa7, 0xe4));
++        }
++        case 0xf4:
++        {
++          return(replace_opcode_xxxx(arch, inst, 0xa7, 0xf4));
++        }
++        default:
++        {
++          return(replace_opcode_xx_x(arch, inst, opcode1, opcode2));
++        }
++      }
++#endif /* #ifdef OPTION_OPTINST */
++      return(replace_opcode_xx_x(arch, inst, opcode1, opcode2));
++    }
+     case 0xb2:
++    {
++      return(replace_opcode_xxxx(arch, inst, opcode1, opcode2));
++    }
+     case 0xb3:
+-    case 0xb9:
+-    case 0xe4:
+-    case 0xe5:
+-    case 0xe6:
+     {
+       return(replace_opcode_xxxx(arch, inst, opcode1, opcode2));
+     }
+-    case 0xa5:
++    case 0xb9:
+     {
+-      if(arch == ARCH_900)
+-        return(replace_opcode_xx_x(arch, inst, opcode1, opcode2));
+       return(replace_opcode_xxxx(arch, inst, opcode1, opcode2));
+     }
+-    case 0xa7:
+     case 0xc0:
++    {
++      return(replace_opcode_xx_x(arch, inst, opcode1, opcode2));
++    }
+     case 0xc2:
++    {
++      return(replace_opcode_xx_x(arch, inst, opcode1, opcode2));
++    }
+     case 0xc4:
++    {
++      return(replace_opcode_xx_x(arch, inst, opcode1, opcode2));
++    }
+     case 0xc6:
++    {
++      return(replace_opcode_xx_x(arch, inst, opcode1, opcode2));
++    }
+     case 0xc8:
++    {
++      return(replace_opcode_xx_x(arch, inst, opcode1, opcode2));
++    }
+     case 0xcc:
+     {
+       return(replace_opcode_xx_x(arch, inst, opcode1, opcode2));
+     }
+     case 0xe3:
++    {
++      return(replace_opcode_xx________xx(arch, inst, opcode1, opcode2));
++    }
++    case 0xe4:
++    case 0xe5:
++    {
++      return(replace_opcode_xxxx(arch, inst, opcode1, opcode2));
++    }
++    case 0xe6:
++    {
++      return(replace_opcode_xxxx(arch, inst, opcode1, opcode2));
++    }
+     case 0xeb:
++    {
++      return(replace_opcode_xx________xx(arch, inst, opcode1, opcode2));
++    }
+     case 0xec:
++    {
++      return(replace_opcode_xx________xx(arch, inst, opcode1, opcode2));
++    }
+     case 0xed:
+     {
+       return(replace_opcode_xx________xx(arch, inst, opcode1, opcode2));
+@@ -1968,8 +2110,7 @@
+     }
+     for(i = 0; i < 0x10; i++)
+     {
+-      if(arch == ARCH_900)
+-        replace_opcode_xx_x(arch, opcode_a5_x[i][arch], 0xa5, i);
++      replace_opcode_xx_x(arch, opcode_a5_x[i][arch], 0xa5, i);
+       replace_opcode_xx_x(arch, opcode_a7_x[i][arch], 0xa7, i);
+       replace_opcode_xx_x(arch, opcode_c0_x[i][arch], 0xc0, i);
+       replace_opcode_xx_x(arch, opcode_c2_x[i][arch], 0xc2, i);
+@@ -2081,9 +2222,13 @@
+ #define execute_opcode_c6_x operation_exception
+ #define execute_opcode_c8_x operation_exception
+ #define execute_opcode_cc_x operation_exception
++#define execute_opcode_e3xx operation_exception
+ #define execute_opcode_e4xx operation_exception
+ #define execute_opcode_e5xx operation_exception
+ #define execute_opcode_e6xx operation_exception
++#define execute_opcode_ebxx operation_exception
++#define execute_opcode_ecxx operation_exception
++#define execute_opcode_edxx operation_exception
+ 
+ 
+ static zz_func opcode_table[0x100][GEN_MAXARCH] = {
+@@ -2098,8 +2243,8 @@
+  /*08*/   GENx370x___x___ (set_storage_key,RR,"SSK"),
+  /*09*/   GENx370x___x___ (insert_storage_key,RR,"ISK"),
+  /*0A*/   GENx370x390x900 (supervisor_call,RR_SVC,"SVC"),
+- /*0B*/   GENx___x390x900 (branch_and_set_mode,RR,"BSM"),
+- /*0C*/   GENx___x390x900 (branch_and_save_and_set_mode,RR,"BASSM"),
++ /*0B*/   GENx37Xx390x900 (branch_and_set_mode,RR,"BSM"),
++ /*0C*/   GENx37Xx390x900 (branch_and_save_and_set_mode,RR,"BASSM"),
+  /*0D*/   GENx370x390x900 (branch_and_save_register,RR,"BASR"),
+  /*0E*/   GENx370x390x900 (move_long,RR,"MVCL"),
+  /*0F*/   GENx370x390x900 (compare_logical_character_long,RR,"CLCL"),
+@@ -2255,8 +2400,8 @@
+  /*A5*/   GENx370x390x900 (execute_opcode_a5_x,a5_x,""), /* execute_opcode_a5xx with vector facility */
+  /*A6*/   GENx370x390x900 (execute_opcode_a6xx,a6xx,""),
+  /*A7*/   GENx370x390x900 (execute_opcode_a7_x,a7_x,""),
+- /*A8*/   GENx370x390x900 (move_long_extended,RS,"MVCLE"),
+- /*A9*/   GENx370x390x900 (compare_logical_long_extended,RS,"CLCLE"),
++ /*A8*/   GENx37Xx390x900 (move_long_extended,RS,"MVCLE"),
++ /*A9*/   GENx37Xx390x900 (compare_logical_long_extended,RS,"CLCLE"),
+  /*AA*/   GENx___x___x___ ,
+  /*AB*/   GENx___x___x___ ,
+  /*AC*/   GENx370x390x900 (store_then_and_system_mask,SI,"STNSM"),
+@@ -2348,7 +2493,7 @@
+ static zz_func opcode_01xx[0x100][GEN_MAXARCH] = {
+  /*0100*/ GENx___x___x___ ,
+  /*0101*/ GENx___x390x900 (program_return,E,"PR"),
+- /*0102*/ GENx___x390x900 (update_tree,E,"UPT"),
++ /*0102*/ GENx37Xx390x900 (update_tree,E,"UPT"),
+  /*0103*/ GENx___x___x___ ,
+  /*0104*/ GENx___x___x900 (perform_timing_facility_function,E,"PTFF"),
+  /*0105*/ GENx___x___x___ , /*(clear_message,?,"CMSG"),*/
+@@ -2357,9 +2502,9 @@
+  /*0108*/ GENx___x___x___ , /*(test_message_path_state,?,"TMPS"),*/
+  /*0109*/ GENx___x___x___ , /*(clear_message_path_state,?,"CMPS"),*/
+  /*010A*/ GENx___x390x900 (perform_floating_point_operation,E,"PFPO"),
+- /*010B*/ GENx___x390x900 (test_addressing_mode,E,"TAM"),
+- /*010C*/ GENx___x390x900 (set_addressing_mode_24,E,"SAM24"),
+- /*010D*/ GENx___x390x900 (set_addressing_mode_31,E,"SAM31"),
++ /*010B*/ GENx37Xx390x900 (test_addressing_mode,E,"TAM"),
++ /*010C*/ GENx37Xx390x900 (set_addressing_mode_24,E,"SAM24"),
++ /*010D*/ GENx37Xx390x900 (set_addressing_mode_31,E,"SAM31"),
+  /*010E*/ GENx___x___x900 (set_addressing_mode_64,E,"SAM64"),
+  /*010F*/ GENx___x___x___ ,
+  /*0110*/ GENx___x___x___ ,
+@@ -2607,20 +2752,20 @@
+ static zz_func opcode_a5_x[0x10][GEN_MAXARCH] = {
+  /*A5x0*/ GENx___x___x900 (insert_immediate_high_high,RI,"IIHH"),
+  /*A5x1*/ GENx___x___x900 (insert_immediate_high_low,RI,"IIHL"),
+- /*A5x2*/ GENx___x___x900 (insert_immediate_low_high,RI,"IILH"),
+- /*A5x3*/ GENx___x___x900 (insert_immediate_low_low,RI,"IILL"),
++ /*A5x2*/ GENx37Xx___x900 (insert_immediate_low_high,RI,"IILH"),
++ /*A5x3*/ GENx37Xx___x900 (insert_immediate_low_low,RI,"IILL"),
+  /*A5x4*/ GENx___x___x900 (and_immediate_high_high,RI,"NIHH"),
+  /*A5x5*/ GENx___x___x900 (and_immediate_high_low,RI,"NIHL"),
+- /*A5x6*/ GENx___x___x900 (and_immediate_low_high,RI,"NILH"),
+- /*A5x7*/ GENx___x___x900 (and_immediate_low_low,RI,"NILL"),
++ /*A5x6*/ GENx37Xx___x900 (and_immediate_low_high,RI,"NILH"),
++ /*A5x7*/ GENx37Xx___x900 (and_immediate_low_low,RI,"NILL"),
+  /*A5x8*/ GENx___x___x900 (or_immediate_high_high,RI,"OIHH"),
+  /*A5x9*/ GENx___x___x900 (or_immediate_high_low,RI,"OIHL"),
+- /*A5xA*/ GENx___x___x900 (or_immediate_low_high,RI,"OILH"),
+- /*A5xB*/ GENx___x___x900 (or_immediate_low_low,RI,"OILL"),
++ /*A5xA*/ GENx37Xx___x900 (or_immediate_low_high,RI,"OILH"),
++ /*A5xB*/ GENx37Xx___x900 (or_immediate_low_low,RI,"OILL"),
+  /*A5xC*/ GENx___x___x900 (load_logical_immediate_high_high,RI,"LLIHH"),
+  /*A5xD*/ GENx___x___x900 (load_logical_immediate_high_low,RI,"LLIHL"),
+- /*A5xE*/ GENx___x___x900 (load_logical_immediate_low_high,RI,"LLILH"),
+- /*A5xF*/ GENx___x___x900 (load_logical_immediate_low_low,RI,"LLILL") } ;
++ /*A5xE*/ GENx37Xx___x900 (load_logical_immediate_low_high,RI,"LLILH"),
++ /*A5xF*/ GENx37Xx___x900 (load_logical_immediate_low_low,RI,"LLILL") } ;
+ 
+ 
+ static zz_func opcode_a7_x[0x10][GEN_MAXARCH] = {
+@@ -2669,15 +2814,15 @@
+  /*B217*/ GENx___x___x___ ,                                   /*%STETR/STSYN */
+  /*B218*/ GENx370x390x900 (program_call,S,"PC"),
+  /*B219*/ GENx370x390x900 (set_address_space_control,S,"SAC"),
+- /*B21A*/ GENx___x390x900 (compare_and_form_codeword,S,"CFC"),
++ /*B21A*/ GENx37Xx390x900 (compare_and_form_codeword,S,"CFC"),
+  /*B21B*/ GENx___x___x___ ,
+  /*B21C*/ GENx___x___x___ ,
+  /*B21D*/ GENx___x___x___ ,
+  /*B21E*/ GENx___x___x___ ,
+  /*B21F*/ GENx___x___x___ ,
+- /*B220*/ GENx___x390x900 (service_call,RRE,"SERVC"),
++ /*B220*/ GENx370x390x900 (service_call,RRE,"SERVC"),
+  /*B221*/ GENx370x390x900 (invalidate_page_table_entry,RRR,"IPTE"),
+- /*B222*/ GENx370x390x900 (insert_program_mask,RRE_R1,"IPM"),
++ /*B222*/ GENx37Xx390x900 (insert_program_mask,RRE_R1,"IPM"),
+  /*B223*/ GENx370x390x900 (insert_virtual_storage_key,RRE,"IVSK"),
+  /*B224*/ GENx370x390x900 (insert_address_space_control,RRE_R1,"IAC"),
+  /*B225*/ GENx370x390x900 (set_secondary_asn,RRE_R1,"SSAR"),
+@@ -3192,7 +3337,7 @@
+  /*B91C*/ GENx___x___x900 (multiply_single_long_fullword_register,RRE,"MSGFR"),
+  /*B91D*/ GENx___x___x900 (divide_single_long_fullword_register,RRE,"DSGFR"),
+  /*B91E*/ GENx37Xx390x900 (compute_message_authentication_code,RRE,"KMAC"),
+- /*B91F*/ GENx___x390x900 (load_reversed_register,RRE,"LRVR"),
++ /*B91F*/ GENx37Xx390x900 (load_reversed_register,RRE,"LRVR"),
+  /*B920*/ GENx___x___x900 (compare_long_register,RRE,"CGR"),
+  /*B921*/ GENx___x___x900 (compare_logical_long_register,RRE,"CLGR"),
+  /*B922*/ GENx___x___x___ ,
+@@ -3427,15 +3572,15 @@
+  /*C0x4*/ GENx37Xx390x900 (branch_relative_on_condition_long,RIL_A,"BRCL"),
+  /*C0x5*/ GENx37Xx390x900 (branch_relative_and_save_long,RIL_A,"BRASL"),
+  /*C0x6*/ GENx___x___x900 (exclusive_or_immediate_high_fullword,RIL,"XIHF"),       /*@Z9*/
+- /*C0x7*/ GENx___x___x900 (exclusive_or_immediate_low_fullword,RIL,"XILF"),        /*@Z9*/
++ /*C0x7*/ GENx37Xx___x900 (exclusive_or_immediate_low_fullword,RIL,"XILF"),        /*@Z9*/
+  /*C0x8*/ GENx___x___x900 (insert_immediate_high_fullword,RIL,"IIHF"),             /*@Z9*/
+- /*C0x9*/ GENx___x___x900 (insert_immediate_low_fullword,RIL,"IILF"),              /*@Z9*/
++ /*C0x9*/ GENx37Xx___x900 (insert_immediate_low_fullword,RIL,"IILF"),              /*@Z9*/
+  /*C0xA*/ GENx___x___x900 (and_immediate_high_fullword,RIL,"NIHF"),                /*@Z9*/
+- /*C0xB*/ GENx___x___x900 (and_immediate_low_fullword,RIL,"NILF"),                 /*@Z9*/
++ /*C0xB*/ GENx37Xx___x900 (and_immediate_low_fullword,RIL,"NILF"),                 /*@Z9*/
+  /*C0xC*/ GENx___x___x900 (or_immediate_high_fullword,RIL,"OIHF"),                 /*@Z9*/
+- /*C0xD*/ GENx___x___x900 (or_immediate_low_fullword,RIL,"OILF"),                  /*@Z9*/
++ /*C0xD*/ GENx37Xx___x900 (or_immediate_low_fullword,RIL,"OILF"),                  /*@Z9*/
+  /*C0xE*/ GENx___x___x900 (load_logical_immediate_high_fullword,RIL,"LLIHF"),      /*@Z9*/
+- /*C0xF*/ GENx___x___x900 (load_logical_immediate_low_fullword,RIL,"LLILF") };     /*@Z9*/
++ /*C0xF*/ GENx37Xx___x900 (load_logical_immediate_low_fullword,RIL,"LLILF") };     /*@Z9*/
+ 
+ 
+ static zz_func opcode_c2_x[0x10][GEN_MAXARCH] = {                                  /*@Z9*/
+@@ -3498,7 +3643,7 @@
+ static zz_func opcode_c8_x[0x10][GEN_MAXARCH] = {
+  /*C8x0*/ GENx___x___x900 (move_with_optional_specifications,SSF,"MVCOS"),
+  /*C8x1*/ GENx___x___x900 (extract_cpu_time,SSF,"ECTG"),
+- /*C8x2*/ GENx___x___x900 (compare_and_swap_and_store,SSF,"CSST"),
++ /*C8x2*/ GENx37Xx___x900 (compare_and_swap_and_store,SSF,"CSST"),
+  /*C8x3*/ GENx___x___x___ ,
+  /*C8x4*/ GENx37Xx390x900 (load_pair_disjoint,SSF_RSS,"LPD"),                      /*810*/
+  /*C8x5*/ GENx___x___x900 (load_pair_disjoint_long,SSF_RSS,"LPDG"),                /*810*/
+@@ -3540,7 +3685,7 @@
+  /*E303*/ GENx___x___x900 (load_real_address_long,RXY,"LRAG"),
+  /*E304*/ GENx___x___x900 (load_long,RXY,"LG"),
+  /*E305*/ GENx___x___x___ ,
+- /*E306*/ GENx___x___x900 (convert_to_binary_y,RXY,"CVBY"),
++ /*E306*/ GENx37Xx___x900 (convert_to_binary_y,RXY,"CVBY"),
+  /*E307*/ GENx___x___x___ ,
+  /*E308*/ GENx___x___x900 (add_long,RXY,"AG"),
+  /*E309*/ GENx___x___x900 (subtract_long,RXY,"SG"),
+@@ -3564,15 +3709,15 @@
+  /*E31B*/ GENx___x___x900 (subtract_logical_long_fullword,RXY,"SLGF"),
+  /*E31C*/ GENx___x___x900 (multiply_single_long_fullword,RXY,"MSGF"),
+  /*E31D*/ GENx___x___x900 (divide_single_long_fullword,RXY,"DSGF"),
+- /*E31E*/ GENx___x390x900 (load_reversed,RXY,"LRV"),
+- /*E31F*/ GENx___x390x900 (load_reversed_half,RXY,"LRVH"),
++ /*E31E*/ GENx37Xx390x900 (load_reversed,RXY,"LRV"),
++ /*E31F*/ GENx37Xx390x900 (load_reversed_half,RXY,"LRVH"),
+  /*E320*/ GENx___x___x900 (compare_long,RXY,"CG"),
+  /*E321*/ GENx___x___x900 (compare_logical_long,RXY,"CLG"),
+  /*E322*/ GENx___x___x___ ,
+  /*E323*/ GENx___x___x___ ,
+  /*E324*/ GENx___x___x900 (store_long,RXY,"STG"),
+  /*E325*/ GENx___x___x___ ,
+- /*E326*/ GENx___x___x900 (convert_to_decimal_y,RXY,"CVDY"),
++ /*E326*/ GENx37Xx___x900 (convert_to_decimal_y,RXY,"CVDY"),
+  /*E327*/ GENx___x___x___ ,
+  /*E328*/ GENx___x___x___ ,
+  /*E329*/ GENx___x___x___ ,
+@@ -3596,8 +3741,8 @@
+  /*E33B*/ GENx___x___x___ ,
+  /*E33C*/ GENx___x___x___ ,
+  /*E33D*/ GENx___x___x___ ,
+- /*E33E*/ GENx___x390x900 (store_reversed,RXY,"STRV"),
+- /*E33F*/ GENx___x390x900 (store_reversed_half,RXY,"STRVH"),
++ /*E33E*/ GENx37Xx390x900 (store_reversed,RXY,"STRV"),
++ /*E33F*/ GENx37Xx390x900 (store_reversed_half,RXY,"STRVH"),
+  /*E340*/ GENx___x___x___ ,
+  /*E341*/ GENx___x___x___ ,
+  /*E342*/ GENx___x___x___ ,
+@@ -3614,22 +3759,22 @@
+  /*E34D*/ GENx___x___x___ ,
+  /*E34E*/ GENx___x___x___ ,
+  /*E34F*/ GENx___x___x___ ,
+- /*E350*/ GENx___x___x900 (store_y,RXY,"STY"),
+- /*E351*/ GENx___x___x900 (multiply_single_y,RXY,"MSY"),
++ /*E350*/ GENx37Xx___x900 (store_y,RXY,"STY"),
++ /*E351*/ GENx37Xx___x900 (multiply_single_y,RXY,"MSY"),
+  /*E352*/ GENx___x___x___ ,
+  /*E353*/ GENx___x___x___ ,
+- /*E354*/ GENx___x___x900 (and_y,RXY,"NY"),
+- /*E355*/ GENx___x___x900 (compare_logical_y,RXY,"CLY"),
+- /*E356*/ GENx___x___x900 (or_y,RXY,"OY"),
+- /*E357*/ GENx___x___x900 (exclusive_or_y,RXY,"XY"),
+- /*E358*/ GENx___x___x900 (load_y,RXY,"LY"),
+- /*E359*/ GENx___x___x900 (compare_y,RXY,"CY"),
+- /*E35A*/ GENx___x___x900 (add_y,RXY,"AY"),
+- /*E35B*/ GENx___x___x900 (subtract_y,RXY,"SY"),
+- /*E35C*/ GENx___x___x900 (multiply_y,RXY,"MFY"),                                  /*208*/
++ /*E354*/ GENx37Xx___x900 (and_y,RXY,"NY"),
++ /*E355*/ GENx37Xx___x900 (compare_logical_y,RXY,"CLY"),
++ /*E356*/ GENx37Xx___x900 (or_y,RXY,"OY"),
++ /*E357*/ GENx37Xx___x900 (exclusive_or_y,RXY,"XY"),
++ /*E358*/ GENx37Xx___x900 (load_y,RXY,"LY"),
++ /*E359*/ GENx37Xx___x900 (compare_y,RXY,"CY"),
++ /*E35A*/ GENx37Xx___x900 (add_y,RXY,"AY"),
++ /*E35B*/ GENx37Xx___x900 (subtract_y,RXY,"SY"),
++ /*E35C*/ GENx37Xx___x900 (multiply_y,RXY,"MFY"),                                  /*208*/
+  /*E35D*/ GENx___x___x___ ,
+- /*E35E*/ GENx___x___x900 (add_logical_y,RXY,"ALY"),
+- /*E35F*/ GENx___x___x900 (subtract_logical_y,RXY,"SLY"),
++ /*E35E*/ GENx37Xx___x900 (add_logical_y,RXY,"ALY"),
++ /*E35F*/ GENx37Xx___x900 (subtract_logical_y,RXY,"SLY"),
+  /*E360*/ GENx___x___x___ ,
+  /*E361*/ GENx___x___x___ ,
+  /*E362*/ GENx___x___x___ ,
+@@ -3652,13 +3797,13 @@
+  /*E373*/ GENx___x___x900 (insert_character_y,RXY,"ICY"),
+  /*E374*/ GENx___x___x___ ,
+  /*E375*/ GENx___x___x900 (load_address_extended_y,RXY,"LAEY"),                    /*208*/
+- /*E376*/ GENx___x___x900 (load_byte,RXY,"LB"),
++ /*E376*/ GENx37Xx___x900 (load_byte,RXY,"LB"),
+  /*E377*/ GENx___x___x900 (load_byte_long,RXY,"LGB"),
+- /*E378*/ GENx___x___x900 (load_halfword_y,RXY,"LHY"),
+- /*E379*/ GENx___x___x900 (compare_halfword_y,RXY,"CHY"),
+- /*E37A*/ GENx___x___x900 (add_halfword_y,RXY,"AHY"),
+- /*E37B*/ GENx___x___x900 (subtract_halfword_y,RXY,"SHY"),
+- /*E37C*/ GENx___x___x900 (multiply_halfword_y,RXY,"MHY"),                         /*208*/
++ /*E378*/ GENx37Xx___x900 (load_halfword_y,RXY,"LHY"),
++ /*E379*/ GENx37Xx___x900 (compare_halfword_y,RXY,"CHY"),
++ /*E37A*/ GENx37Xx___x900 (add_halfword_y,RXY,"AHY"),
++ /*E37B*/ GENx37Xx___x900 (subtract_halfword_y,RXY,"SHY"),
++ /*E37C*/ GENx37Xx___x900 (multiply_halfword_y,RXY,"MHY"),                         /*208*/
+  /*E37D*/ GENx___x___x___ ,
+  /*E37E*/ GENx___x___x___ ,
+  /*E37F*/ GENx___x___x___ ,
+@@ -6374,22 +6519,22 @@
+  /*9101*/ GENx370x390x900 (9101,SI,"TM") }; /* Single bit TM */
+ 
+ static zz_func opcode_A7_4[0x10][GEN_MAXARCH] = {
+- /*A704*/ GENx370x390x900 (nop4,RX,"BRC"),
+- /*A714*/ GENx370x390x900 (A714,RX,"BRC"),
+- /*A724*/ GENx370x390x900 (A724,RX,"BRC"),
+- /*A734*/ GENx370x390x900 (A734,RX,"BRC"),
+- /*A744*/ GENx370x390x900 (A744,RX,"BRC"),
+- /*A754*/ GENx370x390x900 (A754,RX,"BRC"),
+- /*A764*/ GENx370x390x900 (branch_relative_on_condition,RI_B,"BRC"),
+- /*A774*/ GENx370x390x900 (A774,RX,"BRC"),
+- /*A784*/ GENx370x390x900 (A784,RX,"BRC"),
+- /*A794*/ GENx370x390x900 (branch_relative_on_condition,RI_B,"BRC"),
+- /*A7A4*/ GENx370x390x900 (A7A4,RX,"BRC"),
+- /*A7B4*/ GENx370x390x900 (A7B4,RX,"BRC"),
+- /*A7C4*/ GENx370x390x900 (A7C4,RX,"BRC"),
+- /*A7D4*/ GENx370x390x900 (A7D4,RX,"BRC"),
+- /*A7E4*/ GENx370x390x900 (A7E4,RX,"BRC"),
+- /*A7F4*/ GENx370x390x900 (A7F4,RX,"BRC") };
++ /*A704*/ GENx37Xx390x900 (nop4,RX,"BRC"),
++ /*A714*/ GENx37Xx390x900 (A714,RX,"BRC"),
++ /*A724*/ GENx37Xx390x900 (A724,RX,"BRC"),
++ /*A734*/ GENx37Xx390x900 (A734,RX,"BRC"),
++ /*A744*/ GENx37Xx390x900 (A744,RX,"BRC"),
++ /*A754*/ GENx37Xx390x900 (A754,RX,"BRC"),
++ /*A764*/ GENx37Xx390x900 (branch_relative_on_condition,RI_B,"BRC"),
++ /*A774*/ GENx37Xx390x900 (A774,RX,"BRC"),
++ /*A784*/ GENx37Xx390x900 (A784,RX,"BRC"),
++ /*A794*/ GENx37Xx390x900 (branch_relative_on_condition,RI_B,"BRC"),
++ /*A7A4*/ GENx37Xx390x900 (A7A4,RX,"BRC"),
++ /*A7B4*/ GENx37Xx390x900 (A7B4,RX,"BRC"),
++ /*A7C4*/ GENx37Xx390x900 (A7C4,RX,"BRC"),
++ /*A7D4*/ GENx37Xx390x900 (A7D4,RX,"BRC"),
++ /*A7E4*/ GENx37Xx390x900 (A7E4,RX,"BRC"),
++ /*A7F4*/ GENx37Xx390x900 (A7F4,RX,"BRC") };
+ 
+ static zz_func opcode_BF_x[0x03][GEN_MAXARCH] = {
+  /*BF_x*/ GENx370x390x900 (BF_x,RS,"ICM"),
+--- a/opcode.h	2012-11-30 11:13:08.000000000 +0100
++++ b/opcode.h	2016-02-27 12:00:00.000000000 +0100
+@@ -3435,7 +3435,6 @@
+ DEF_INST(store_float_short_y);
+ #endif /*defined(FEATURE_LONG_DISPLACEMENT) && defined(FEATURE_HEXADECIMAL_FLOATING_POINT)*/
+ 
+-
+ /* Instructions in general1.c */
+ DEF_INST(add_register);
+ DEF_INST(add);
+@@ -3450,10 +3449,10 @@
+ DEF_INST(branch_and_link);
+ DEF_INST(branch_and_save_register);
+ DEF_INST(branch_and_save);
+-#if defined(FEATURE_BIMODAL_ADDRESSING)
++#if defined(FEATURE_BIMODAL_ADDRESSING) || __GEN_ARCH == 370
+ DEF_INST(branch_and_save_and_set_mode);
+ DEF_INST(branch_and_set_mode);
+-#endif /*defined(FEATURE_BIMODAL_ADDRESSING)*/
++#endif /*defined(FEATURE_BIMODAL_ADDRESSING) || __GEN_ARCH == 370*/
+ DEF_INST(branch_on_condition_register);
+ DEF_INST(branch_on_condition);
+ DEF_INST(branch_on_count_register);
+@@ -3514,9 +3513,9 @@
+ DEF_INST(exclusive_or_immediate);
+ DEF_INST(exclusive_or_character);
+ DEF_INST(execute);
+-#if defined(FEATURE_CONFIGURATION_TOPOLOGY_FACILITY)
++#if defined(FEATURE_EXECUTE_EXTENSIONS_FACILITY)
+ DEF_INST(execute_relative_long);                                /*208*/
+-#endif /*defined(FEATURE_CONFIGURATION_TOPOLOGY_FACILITY)*/
++#endif /*FEATURE_EXECUTE_EXTENSIONS_FACILITY)*/
+ #if defined(FEATURE_ACCESS_REGISTERS)
+ DEF_INST(extract_access_register);
+ #endif /*defined(FEATURE_ACCESS_REGISTERS)*/
+@@ -4171,9 +4170,13 @@
+ DEF_INST(rotate_left_single_logical);
+ DEF_INST(set_addressing_mode_24);
+ DEF_INST(set_addressing_mode_31);
++DEF_INST(test_addressing_mode);
+ DEF_INST(subtract_logical_borrow);
+ DEF_INST(subtract_logical_borrow_register);
+ #endif /*defined(FEATURE_ESAME_N3_ESA390) || defined(FEATURE_ESAME)*/
++#if defined(FEATURE_ESAME)
++DEF_INST(set_addressing_mode_64);
++#endif /*defined(FEATURE_ESAME)*/
+ DEF_INST(divide_single_long);
+ DEF_INST(divide_single_long_fullword);
+ DEF_INST(divide_single_long_register);
+@@ -4184,7 +4187,6 @@
+ DEF_INST(load_pair_from_quadword);
+ DEF_INST(extract_stacked_registers_long);
+ DEF_INST(extract_and_set_extended_authority);
+-DEF_INST(test_addressing_mode);
+ #if defined(FEATURE_ENHANCED_DAT_FACILITY)
+ DEF_INST(perform_frame_management_function);                    /*208*/
+ #endif /*defined(FEATURE_ENHANCED_DAT_FACILITY)*/
+@@ -4227,9 +4229,6 @@
+ DEF_INST(store_multiple_long);
+ DEF_INST(load_using_real_address_long);
+ DEF_INST(store_using_real_address_long);
+-DEF_INST(set_addressing_mode_24);
+-DEF_INST(set_addressing_mode_31);
+-DEF_INST(set_addressing_mode_64);
+ DEF_INST(load_program_status_word_extended);
+ DEF_INST(store_long);
+ DEF_INST(store_real_address);
+@@ -4295,22 +4294,6 @@
+ DEF_INST(load_logical_long_fullword_register);
+ DEF_INST(load_logical_long_fullword);
+ DEF_INST(load_logical_long_thirtyone);
+-DEF_INST(insert_immediate_high_high);
+-DEF_INST(insert_immediate_high_low);
+-DEF_INST(insert_immediate_low_high);
+-DEF_INST(insert_immediate_low_low);
+-DEF_INST(and_immediate_high_high);
+-DEF_INST(and_immediate_high_low);
+-DEF_INST(and_immediate_low_high);
+-DEF_INST(and_immediate_low_low);
+-DEF_INST(or_immediate_high_high);
+-DEF_INST(or_immediate_high_low);
+-DEF_INST(or_immediate_low_high);
+-DEF_INST(or_immediate_low_low);
+-DEF_INST(load_logical_immediate_high_high);
+-DEF_INST(load_logical_immediate_high_low);
+-DEF_INST(load_logical_immediate_low_high);
+-DEF_INST(load_logical_immediate_low_low);
+ #if defined(FEATURE_LOAD_REVERSED) || defined(FEATURE_ESAME_N3_ESA390)
+ DEF_INST(load_reversed_register);
+ DEF_INST(load_reversed_long);
+@@ -4404,6 +4387,22 @@
+ DEF_INST(exclusive_or_immediate_low_fullword);                  /*@Z9*/
+ DEF_INST(insert_immediate_high_fullword);                       /*@Z9*/
+ DEF_INST(insert_immediate_low_fullword);                        /*@Z9*/
++DEF_INST(insert_immediate_high_high);
++DEF_INST(insert_immediate_high_low);
++DEF_INST(insert_immediate_low_high);
++DEF_INST(insert_immediate_low_low);
++DEF_INST(and_immediate_high_high);
++DEF_INST(and_immediate_high_low);
++DEF_INST(and_immediate_low_high);
++DEF_INST(and_immediate_low_low);
++DEF_INST(or_immediate_high_high);
++DEF_INST(or_immediate_high_low);
++DEF_INST(or_immediate_low_high);
++DEF_INST(or_immediate_low_low);
++DEF_INST(load_logical_immediate_high_high);
++DEF_INST(load_logical_immediate_high_low);
++DEF_INST(load_logical_immediate_low_high);
++DEF_INST(load_logical_immediate_low_low);
+ DEF_INST(load_long_fullword_immediate);                         /*@Z9*/
+ DEF_INST(load_logical_immediate_high_fullword);                 /*@Z9*/
+ DEF_INST(load_logical_immediate_low_fullword);                  /*@Z9*/
+--- a/s37x.c	2012-11-30 11:13:08.000000000 +0100
++++ b/s37x.c	2016-03-27 20:30:00.000000000 +0200
+@@ -103,9 +103,13 @@
+ /* The actual instruction tables                          */
+ /**********************************************************/
+ INST37X_TABLE_START(00)
++ /*0B*/   INST37X (branch_and_set_mode,0xb)
++ /*0C*/   INST37X (branch_and_save_and_set_mode,0xc)
+  /*71*/   INST37X (multiply_single,0x71)
+  /*84*/   INST37X (branch_relative_on_index_high,0x84)
+  /*85*/   INST37X (branch_relative_on_index_low_or_equal,0x85)
++ /*A8*/   INST37X (move_long_extended,0xa8)
++ /*A9*/   INST37X (compare_logical_long_extended,0xa9)
+  /*D0*/   INST37X (translate_and_test_reverse,0xd0)
+  /*E1*/   INST37X (pack_unicode,0xe1)
+  /*E2*/   INST37X (unpack_unicode,0xe2)
+@@ -113,20 +117,61 @@
+  /*EA*/   INST37X (unpack_ascii,0xea)
+ INST37X_TABLE_END(00)
+ 
++INST37X_TABLE_START(01)
++ /*0102*/ INST37X (update_tree,0x2)
++ /*010B*/ INST37X (test_addressing_mode,0xb)
++ /*010C*/ INST37X (set_addressing_mode_24,0xc)
++ /*010D*/ INST37X (set_addressing_mode_31,0xd)
++INST37X_TABLE_END(01)
++
++INST37X_TABLE_START(a5)
++ /*A5x2*/ INST37X (insert_immediate_low_high,2)
++ /*A5x3*/ INST37X (insert_immediate_low_low,3)
++ /*A5x6*/ INST37X (and_immediate_low_high,6)
++ /*A5x7*/ INST37X (and_immediate_low_low,7)
++ /*A5xA*/ INST37X (or_immediate_low_high,0xa)
++ /*A5xB*/ INST37X (or_immediate_low_low,0xb)
++ /*A5xE*/ INST37X (load_logical_immediate_low_high,0xe)
++ /*A5xF*/ INST37X (load_logical_immediate_low_low,0xf)
++INST37X_TABLE_END(a5)
++
+ INST37X_TABLE_START(a7)
+  /*A7x0*/ INST37X (test_under_mask_high,0)
+  /*A7x1*/ INST37X (test_under_mask_low,1)
++#ifdef OPTION_OPTINST
++ /*A704*/ INST37X (nop4,4)
++#else
+  /*A7x4*/ INST37X (branch_relative_on_condition,4)
++#endif /* #ifdef OPTION_OPTINST */
+  /*A7x5*/ INST37X (branch_relative_and_save,5)
+  /*A7x6*/ INST37X (branch_relative_on_count,6)
+  /*A7x8*/ INST37X (load_halfword_immediate,8)
+  /*A7xA*/ INST37X (add_halfword_immediate,0xa)
+  /*A7xC*/ INST37X (multiply_halfword_immediate,0xc)
+  /*A7xE*/ INST37X (compare_halfword_immediate,0xe)
++#ifdef OPTION_OPTINST
++ /*A714*/ INST37X (A714,0x14)
++ /*A724*/ INST37X (A724,0x24)
++ /*A734*/ INST37X (A734,0x34)
++ /*A744*/ INST37X (A744,0x44)
++ /*A754*/ INST37X (A754,0x54)
++ /*A764*/ INST37X (branch_relative_on_condition,0x64)
++ /*A774*/ INST37X (A774,0x74)
++ /*A784*/ INST37X (A784,0x84)
++ /*A794*/ INST37X (branch_relative_on_condition,0x94)
++ /*A7A4*/ INST37X (A7A4,0xa4)
++ /*A7B4*/ INST37X (A7B4,0xb4)
++ /*A7C4*/ INST37X (A7C4,0xc4)
++ /*A7D4*/ INST37X (A7D4,0xd4)
++ /*A7E4*/ INST37X (A7E4,0xe4)
++ /*A7F4*/ INST37X (A7F4,0xf4)
++#endif /* #ifdef OPTION_OPTINST */
+ INST37X_TABLE_END(a7)
+ 
+ 
+ INST37X_TABLE_START(b2)
++ /*B21A*/ INST37X (compare_and_form_codeword,0x1a)
++ /*B222*/ INST37X (insert_program_mask,0x22)
+  /*B241*/ INST37X (checksum,0x41)
+  /*B244*/ INST37X (squareroot_float_long_reg,0x44)
+  /*B245*/ INST37X (squareroot_float_short_reg,0x45)
+@@ -143,7 +188,7 @@
+  /*B2A6*/ INST37X (convert_utf16_to_utf8,0xa6)
+  /*B2A7*/ INST37X (convert_utf8_to_utf16,0xa7)
+ // /*B2B8*/ INST37X (set_bfp_rounding_mode_3bit,0xb8)                                /*810*/
+-// /*B2BD*/ INST37X (load_fpc_and_signal,0xbd)
++ /*B2BD*/ INST37X (load_fpc_and_signal,0xbd)
+ INST37X_TABLE_END(b2)
+ 
+ INST37X_TABLE_START(b3)
+@@ -208,33 +253,33 @@
+  /*B34B*/ INST37X (subtract_bfp_ext_reg,0x4b)
+  /*B34C*/ INST37X (multiply_bfp_ext_reg,0x4c)
+  /*B34D*/ INST37X (divide_bfp_ext_reg,0x4d)
+-// /*B350*/ INST37X (convert_float_long_to_bfp_short_reg,0x50)
+-// /*B351*/ INST37X (convert_float_long_to_bfp_long_reg,0x51)
++ /*B350*/ INST37X (convert_float_long_to_bfp_short_reg,0x50)
++ /*B351*/ INST37X (convert_float_long_to_bfp_long_reg,0x51)
+  /*B353*/ INST37X (divide_integer_bfp_short_reg,0x53)
+  /*B357*/ INST37X (load_fp_int_bfp_short_reg,0x57)
+-// /*B358*/ INST37X (convert_bfp_short_to_float_long_reg,0x58)
+-// /*B359*/ INST37X (convert_bfp_long_to_float_long_reg,0x59)
++ /*B358*/ INST37X (convert_bfp_short_to_float_long_reg,0x58)
++ /*B359*/ INST37X (convert_bfp_long_to_float_long_reg,0x59)
+  /*B35B*/ INST37X (divide_integer_bfp_long_reg,0x5b)
+  /*B35F*/ INST37X (load_fp_int_bfp_long_reg,0x5f)
+  /*B360*/ INST37X (load_positive_float_ext_reg,0x60)
+  /*B361*/ INST37X (load_negative_float_ext_reg,0x61)
+  /*B362*/ INST37X (load_and_test_float_ext_reg,0x62)
+  /*B363*/ INST37X (load_complement_float_ext_reg,0x63)
+-// /*B365*/ INST37X (load_float_ext_reg,0x65)
++ /*B365*/ INST37X (load_float_ext_reg,0x65)
+  /*B366*/ INST37X (load_rounded_float_ext_to_short_reg,0x66)
+  /*B367*/ INST37X (load_fp_int_float_ext_reg,0x67)
+  /*B369*/ INST37X (compare_float_ext_reg,0x69)
+-// /*B370*/ INST37X (load_positive_fpr_long_reg,0x70)
+-// /*B371*/ INST37X (load_negative_fpr_long_reg,0x71)
+-// /*B372*/ INST37X (copy_sign_fpr_long_reg,0x72)
+-// /*B373*/ INST37X (load_complement_fpr_long_reg,0x73)
+-// /*B374*/ INST37X (load_zero_float_short_reg,0x74)
+-// /*B375*/ INST37X (load_zero_float_long_reg,0x75)
+-// /*B376*/ INST37X (load_zero_float_ext_reg,0x76)
++ /*B370*/ INST37X (load_positive_fpr_long_reg,0x70)
++ /*B371*/ INST37X (load_negative_fpr_long_reg,0x71)
++ /*B372*/ INST37X (copy_sign_fpr_long_reg,0x72)
++ /*B373*/ INST37X (load_complement_fpr_long_reg,0x73)
++ /*B374*/ INST37X (load_zero_float_short_reg,0x74)
++ /*B375*/ INST37X (load_zero_float_long_reg,0x75)
++ /*B376*/ INST37X (load_zero_float_ext_reg,0x76)
+  /*B377*/ INST37X (load_fp_int_float_short_reg,0x77)
+  /*B37F*/ INST37X (load_fp_int_float_long_reg,0x7f)
+  /*B384*/ INST37X (set_fpc,0x84)
+-// /*B385*/ INST37X (set_fpc_and_signal,0x85)
++ /*B385*/ INST37X (set_fpc_and_signal,0x85)
+  /*B38C*/ INST37X (extract_fpc,0x8c)
+ // /*B390*/ INST37X (convert_u32_to_bfp_short_reg,0x90)                              /*810*/
+ // /*B391*/ INST37X (convert_u32_to_bfp_long_reg,0x91)                               /*810*/
+@@ -257,7 +302,7 @@
+ INST37X_TABLE_END(b3)
+ 
+ INST37X_TABLE_START(b9)
+-// /*B91E*/ INST37X (compute_message_authentication_code,0x1e)
++ /*B91F*/ INST37X (load_reversed_register,0x1f)
+  /*B926*/ INST37X (load_byte_register,0x26)
+  /*B927*/ INST37X (load_halfword_register,0x27)
+  /*B972*/ INST37X (compare_and_trap_register,0x72)
+@@ -280,20 +325,25 @@
+  /*B9BD*/ INST37X (translate_and_test_reverse_extended,0xbd)
+  /*B9BE*/ INST37X (search_string_unicode,0xbe)
+  /*B9BF*/ INST37X (translate_and_test_extended,0xbf)
+-// /*B9F2*/ INST37X (load_on_condition_register,0xf2)
+-// /*B9F4*/ INST37X (and_distinct_register,0xf4)
+-// /*B9F6*/ INST37X (or_distinct_register,0xf6)
+-// /*B9F7*/ INST37X (exclusive_or_distinct_register,0xf7)
+-// /*B9F8*/ INST37X (add_distinct_register,0xf8)
+-// /*B9F9*/ INST37X (subtract_distinct_register,0xf9)
+-// /*B9FA*/ INST37X (add_logical_distinct_register,0xfa)
+-// /*B9FB*/ INST37X (subtract_logical_distinct_register,0xfb)
++ /*B9F2*/ INST37X (load_on_condition_register,0xf2)
++ /*B9F4*/ INST37X (and_distinct_register,0xf4)
++ /*B9F6*/ INST37X (or_distinct_register,0xf6)
++ /*B9F7*/ INST37X (exclusive_or_distinct_register,0xf7)
++ /*B9F8*/ INST37X (add_distinct_register,0xf8)
++ /*B9F9*/ INST37X (subtract_distinct_register,0xf9)
++ /*B9FA*/ INST37X (add_logical_distinct_register,0xfa)
++ /*B9FB*/ INST37X (subtract_logical_distinct_register,0xfb)
+ INST37X_TABLE_END(b9)
+ 
+ INST37X_TABLE_START(c0)
+  /*C0x0*/ INST37X (load_address_relative_long,0x0)
+  /*C0x4*/ INST37X (branch_relative_on_condition_long,0x4)
+  /*C0x5*/ INST37X (branch_relative_and_save_long,0x5)
++ /*C0x7*/ INST37X (exclusive_or_immediate_low_fullword,0x7)
++ /*C0x9*/ INST37X (insert_immediate_low_fullword,0x9)
++ /*C0xB*/ INST37X (and_immediate_low_fullword,0xb)
++ /*C0xD*/ INST37X (or_immediate_low_fullword,0xd)
++ /*C0xF*/ INST37X (load_logical_immediate_low_fullword,0xf)
+ INST37X_TABLE_END(c0)
+ 
+ INST37X_TABLE_START(c2)
+@@ -314,7 +364,7 @@
+ INST37X_TABLE_END(c4)
+ 
+ INST37X_TABLE_START(c6)
+-// /*C6x0*/ INST37X (execute_relative_long,0x0)
++ /*C6x0*/ INST37X (execute_relative_long,0x0)
+  /*C6x2*/ INST37X (prefetch_data_relative_long,0x2)
+  /*C6x5*/ INST37X (compare_halfword_relative_long,0x5)
+  /*C6x7*/ INST37X (compare_logical_relative_long_halfword,0x7)
+@@ -323,12 +373,38 @@
+ INST37X_TABLE_END(c6)
+ 
+ INST37X_TABLE_START(c8)
+-// /*C8x4*/ INST37X (load_pair_disjoint,0x4)
++ /*C8x2*/ INST37X (compare_and_swap_and_store,0x2)
++ /*C8x4*/ INST37X (load_pair_disjoint,0x4)
+ INST37X_TABLE_END(c8)
+ 
+ INST37X_TABLE_START(e3)
++ /*E306*/ INST37X (convert_to_binary_y,6)
+  /*E312*/ INST37X (load_and_test,0x12)
++ /*E31E*/ INST37X (load_reversed,0x1e)
++ /*E31F*/ INST37X (load_reversed_half,0x1f)
++ /*E326*/ INST37X (convert_to_decimal_y,0x26)
+  /*E336*/ INST37X (prefetch_data,0x36)
++ /*E33E*/ INST37X (store_reversed,0x3e)
++ /*E33F*/ INST37X (store_reversed_half,0x3f)
++ /*E350*/ INST37X (store_y,0x50)
++ /*E351*/ INST37X (multiply_single_y,0x51)
++ /*E354*/ INST37X (and_y,0x54)
++ /*E355*/ INST37X (compare_logical_y,0x55)
++ /*E356*/ INST37X (or_y,0x56)
++ /*E357*/ INST37X (exclusive_or_y,0x57)
++ /*E358*/ INST37X (load_y,0x58)
++ /*E359*/ INST37X (compare_y,0x59)
++ /*E35A*/ INST37X (add_y,0x5a)
++ /*E35B*/ INST37X (subtract_y,0x5b)
++ /*E35C*/ INST37X (multiply_y,0x5c)
++ /*E35E*/ INST37X (add_logical_y,0x5e)
++ /*E35F*/ INST37X (subtract_logical_y,0x5f)
++ /*E376*/ INST37X (load_byte,0x76)
++ /*E378*/ INST37X (load_halfword_y,0x78)
++ /*E379*/ INST37X (compare_halfword_y,0x79)
++ /*E37A*/ INST37X (add_halfword_y,0x7a)
++ /*E37B*/ INST37X (subtract_halfword_y,0x7b)
++ /*E37C*/ INST37X (multiply_halfword_y,0x7c)
+  /*E394*/ INST37X (load_logical_character,0x94)
+  /*E395*/ INST37X (load_logical_halfword,0x95)
+  /*E396*/ INST37X (multiply_logical,0x96)
+@@ -358,17 +434,17 @@
+  /*EB8E*/ INST37X (move_long_unicode,0x8e)
+  /*EB8F*/ INST37X (compare_logical_long_unicode,0x8f)
+  /*EBC0*/ INST37X (test_decimal,0xc0)
+-// /*EBDC*/ INST37X (shift_right_single_distinct,0xdc)
+-// /*EBDD*/ INST37X (shift_left_single_distinct,0xdd)
+-// /*EBDE*/ INST37X (shift_right_single_logical_distinct,0xde)
+-// /*EBDF*/ INST37X (shift_left_single_logical_distinct,0xdf)
+-// /*EBF2*/ INST37X (load_on_condition,0xf2)
+-// /*EBF3*/ INST37X (store_on_condition,0xf3)
+-// /*EBF4*/ INST37X (load_and_and,0xf4)
+-// /*EBF6*/ INST37X (load_and_or,0xf6)
+-// /*EBF7*/ INST37X (load_and_exclusive_or,0xf7)
+-// /*EBF8*/ INST37X (load_and_add,0xf8)
+-// /*EBFA*/ INST37X (load_and_add_logical,0xfa)
++ /*EBDC*/ INST37X (shift_right_single_distinct,0xdc)
++ /*EBDD*/ INST37X (shift_left_single_distinct,0xdd)
++ /*EBDE*/ INST37X (shift_right_single_logical_distinct,0xde)
++ /*EBDF*/ INST37X (shift_left_single_logical_distinct,0xdf)
++ /*EBF2*/ INST37X (load_on_condition,0xf2)
++ /*EBF3*/ INST37X (store_on_condition,0xf3)
++ /*EBF4*/ INST37X (load_and_and,0xf4)
++ /*EBF6*/ INST37X (load_and_or,0xf6)
++ /*EBF7*/ INST37X (load_and_exclusive_or,0xf7)
++ /*EBF8*/ INST37X (load_and_add,0xf8)
++ /*EBFA*/ INST37X (load_and_add_logical,0xfa)
+ INST37X_TABLE_END(eb)
+ 
+ INST37X_TABLE_START(ec)
+@@ -378,8 +454,8 @@
+  /*EC77*/ INST37X (compare_logical_and_branch_relative_register,0x77)
+  /*EC7E*/ INST37X (compare_immediate_and_branch_relative,0x7e)
+  /*EC7F*/ INST37X (compare_logical_immediate_and_branch_relative,0x7f)
+-// /*ECD8*/ INST37X (add_distinct_halfword_immediate,0xd8)
+-// /*ECDA*/ INST37X (add_logical_distinct_signed_halfword_immediate,0xda)
++ /*ECD8*/ INST37X (add_distinct_halfword_immediate,0xd8)
++ /*ECDA*/ INST37X (add_logical_distinct_signed_halfword_immediate,0xda)
+  /*ECF6*/ INST37X (compare_and_branch_register,0xf6)
+  /*ECF7*/ INST37X (compare_logical_and_branch_register,0xf7)
+  /*ECFE*/ INST37X (compare_immediate_and_branch,0xfe)
+@@ -436,6 +512,8 @@
+ /**********************************************************/
+ INST37X_INSERT_TABLE_START
+ INST37X_INSERT_TABLE(00)
++INST37X_INSERT_TABLE(01)
++INST37X_INSERT_TABLE(a5)
+ INST37X_INSERT_TABLE(a7)
+ INST37X_INSERT_TABLE(b2)
+ INST37X_INSERT_TABLE(b3)

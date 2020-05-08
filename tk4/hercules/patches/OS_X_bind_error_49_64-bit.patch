@@ -1,0 +1,11 @@
+--- old_64/tcpip.c	2015-02-05 16:30:00.000000000 +0100
++++ new_64/tcpip.c	2015-04-22 19:00:00.000000000 +0200
+@@ -563,6 +563,8 @@
+ 
+         if (check_not_sock (m, t)) return;
+ 
++        bzero ((LPSOCKADDR)&Clocal_adx, sizeof (Clocal_adx)); /* cleanup address */
++
+         /* set up socket */
+ 		Clocal_adx.sin_family = (short)(i & 0xFF);
+ 		

@@ -1,0 +1,19 @@
+#**********************************************************************
+#***                                                                ***
+#*** Script:  local.rc                                              ***
+#***                                                                ***
+#*** Purpose: Run local scripts                                     ***
+#***                                                                ***
+#*** Updated: 2013/11/15                                            ***
+#***                                                                ***
+#**********************************************************************
+script local_scripts/01
+script local_scripts/02
+script local_scripts/03
+script local_scripts/04
+script local_scripts/05
+script local_scripts/06
+script local_scripts/07
+script local_scripts/08
+script local_scripts/09
+script local_scripts/10

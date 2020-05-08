@@ -1,0 +1,34 @@
+#**********************************************************************
+#***                                                                ***
+#***          Sample Operating System     Version 2.00              ***
+#***                                                                ***
+#**********************************************************************
+#***                                                                ***
+#*** File:    sos.cnf                                               ***
+#***                                                                ***
+#*** Purpose: Hercules configuration file for Madnick Sample OS     ***
+#***          Version for use with CTCA demo                        ***
+#***                                                                ***
+#*** Updated: 2016/05/28                                            ***
+#***                                                                ***
+#**********************************************************************
+CPUSERIAL 004711
+CPUMODEL 3145
+MAINSIZE 16
+XPNDSIZE 0
+CNSLPORT ${CNSL}
+NUMCPU 1
+MAXCPU 1
+ARCHMODE S/370
+00C0 3270
+000C 3505 rdr/sample_operating_system_version_2.00.ipldeck eof
+010C 3505 rdr/dummy.card eof
+020C 3505 rdr/dummy.card eof
+030C 3505 rdr/dummy.card eof
+000E 1403 prt_${SYSNUM}/stream-1_output.txt ${SOSCRLF}
+010E 1403 prt_${SYSNUM}/stream-2_output.txt ${SOSCRLF}
+020E 1403 prt_${SYSNUM}/stream-3_output.txt ${SOSCRLF}
+030E 1403 prt_${SYSNUM}/stream-4_output.txt ${SOSCRLF}
+0610 CTCE ${CTCL} 127.0.0.1 ${CTCR}
+DEFSYM RDR 00C
+DEFSYM GRAF 0C0

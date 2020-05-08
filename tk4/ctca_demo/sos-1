@@ -1,0 +1,49 @@
+#!/bin/bash
+#**********************************************************************
+#***                                                                ***
+#***          Sample Operating System     Version 2.00              ***
+#***                                                                ***
+#**********************************************************************
+#***                                                                ***
+#*** Script:  sos-1                                                 ***
+#***                                                                ***
+#*** Purpose: Hercules startup for Madnick Sample OS                ***
+#***          Version for use with CTCA demo                        ***
+#***                                                                ***
+#*** Updated: 2016/06/14                                            ***
+#***                                                                ***
+#**********************************************************************
+#
+# set environment
+#
+a=`uname -m`
+if [[ ${a:0:3} == 'arm' ]];then
+   hf=`readelf -A /proc/self/exe | grep Tag_ABI_VFP_args`
+   if [[ ${hf:2:3} == 'Tag' ]];then arch='arm';else arch='arm_softfloat';fi
+else if [[ $a == 'x86_64' ]];then arch=64;else arch=32;fi;fi
+system=`uname -s | awk '{print tolower($0)}'`
+case $system in
+linux)
+   force_arch=
+   export PATH=../hercules/$system/$arch/bin:$PATH
+   export LD_LIBRARY_PATH=../hercules/$system/$arch/lib:../hercules/$system/$arch/lib/hercules:$LD_LIBRARY_PATH
+   ;;
+darwin)
+   if [[ $arch == '32' ]];then force_arch='arch -arch i386';else force_arch=;fi
+   export PATH=../hercules/$system/bin:$PATH
+   export DYLD_LIBRARY_PATH=../hercules/$system/lib:../hercules/$system/lib/hercules:$DYLD_LIBRARY_PATH
+   ;;
+*)
+   echo "System $system not supported."
+   exit
+   ;;
+esac
+#
+# start Hercules
+#
+unset SOSCRLF
+export SYSNUM=1
+export CNSL=50520
+export CTCL=30880
+export CTCR=30882
+$force_arch hercules -f conf/sos.cnf >log_1/145.log

@@ -1,0 +1,19 @@
+#**********************************************************************
+#***                                                                ***
+#*** File:    local.cnf                                             ***
+#***                                                                ***
+#*** Purpose: Include local configuration files                     ***
+#***                                                                ***
+#*** Updated: 2013/11/15                                            ***
+#***                                                                ***
+#**********************************************************************
+INCLUDE local_conf/01
+INCLUDE local_conf/02
+INCLUDE local_conf/03
+INCLUDE local_conf/04
+INCLUDE local_conf/05
+INCLUDE local_conf/06
+INCLUDE local_conf/07
+INCLUDE local_conf/08
+INCLUDE local_conf/09
+INCLUDE local_conf/10

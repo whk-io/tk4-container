@@ -1,0 +1,13 @@
+# Install 3270 terminal
+
+OS X - Install
+
+brew install x3270
+
+Linux - Install
+
+apt install x3270
+
+## Connect Terminal
+
+c3270 ip_address 3270 <- port configured 

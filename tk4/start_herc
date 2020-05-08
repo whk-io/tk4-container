@@ -1,0 +1,48 @@
+#!/bin/bash
+#**********************************************************************
+#***                                                                ***
+#*** Script:  start_herc                                            ***
+#***                                                                ***
+#*** Purpose: Hercules startup for OS/VS2-MVS 3.8j with             ***
+#***          (TK4- manual operations)                              ***
+#***                                                                ***
+#*** Updated: 2014/12/22                                            ***
+#***                                                                ***
+#**********************************************************************
+#
+# set environment
+#
+a=`uname -m`
+if [[ ${a:0:3} == 'arm' ]];then
+   hf=`readelf -A /proc/self/exe | grep Tag_ABI_VFP_args`
+   if [[ ${hf:2:3} == 'Tag' ]];then arch='arm';else arch='arm_softfloat';fi
+else if [[ $a == 'x86_64' ]];then arch=64;else arch=32;fi;fi
+system=`uname -s | awk '{print tolower($0)}'`
+case $system in
+linux)
+   force_arch=
+   export PATH=hercules/$system/$arch/bin:$PATH
+   export LD_LIBRARY_PATH=hercules/$system/$arch/lib:hercules/$system/$arch/lib/hercules:$LD_LIBRARY_PATH
+   ;;
+darwin)
+   if [[ $arch == '32' ]];then force_arch='arch -arch i386';else force_arch=;fi
+   export PATH=hercules/$system/bin:$PATH
+   export DYLD_LIBRARY_PATH=hercules/$system/lib:hercules/$system/lib/hercules:$DYLD_LIBRARY_PATH
+   ;;
+*)
+   echo "System $system not supported."
+   exit
+   ;;
+esac
+#
+# source configuration variables
+#
+if [ -f local_conf/tk4-.parm ]; then . local_conf/tk4-.parm; fi
+if [[ ${arch:0:3} == 'arm'   && $REP101A == '' ]];then export REP101A=specific;fi
+if [[ $REP101A == 'specific' && $CMD101A == '' ]];then export CMD101A=02;fi
+#
+# start Hercules
+#
+export HERCULES_RC=scripts/tk4-.rc
+export TK4CONS=extcons
+$force_arch hercules -f conf/tk4-.cnf >log/3033.log

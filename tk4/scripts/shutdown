@@ -1,0 +1,28 @@
+#**********************************************************************
+#***                                                                ***
+#*** Script:  shutdown                                              ***
+#***                                                                ***
+#*** Purpose: initiate OS/VS2-MVS 3.8j shutdown                     ***
+#***                                                                ***
+#*** Updated: 2016/09/15                                            ***
+#***                                                                ***
+#**********************************************************************
+hao tgt HASP099
+hao cmd script scripts/pjes2
+hao tgt HASP085
+hao cmd script scripts/z_eod
+hao tgt IEE334I
+hao cmd script scripts/quiesce
+script scripts/shutdown_${NUMCPU:=1}${TK4CRLF:=ix}
+******************************************************
+*** Shutdown sequence initiated, please logoff now ***
+******************************************************
+#
+# don't hurry
+#
+* pausing for 30 seconds, please stand by.
+pause 30
+#
+# initiate OS/VS2-MVS 3.8j shutdown
+#
+/f bsppilot,shutnow

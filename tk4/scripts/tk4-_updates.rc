@@ -1,0 +1,19 @@
+#**********************************************************************
+#***                                                                ***
+#*** Script:  tk4-_updates.rc                                       ***
+#***                                                                ***
+#*** Purpose: Run TK4- update scripts                               ***
+#***                                                                ***
+#*** Updated: 2013/11/15                                            ***
+#***                                                                ***
+#**********************************************************************
+script scripts/tk4-_updates/01
+script scripts/tk4-_updates/02
+script scripts/tk4-_updates/03
+script scripts/tk4-_updates/04
+script scripts/tk4-_updates/05
+script scripts/tk4-_updates/06
+script scripts/tk4-_updates/07
+script scripts/tk4-_updates/08
+script scripts/tk4-_updates/09
+script scripts/tk4-_updates/10

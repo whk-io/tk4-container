@@ -1,0 +1,19 @@
+#**********************************************************************
+#***                                                                ***
+#*** File:    tk4-_updates.cnf                                      ***
+#***                                                                ***
+#*** Purpose: Include TK4- configuration updates                    ***
+#***                                                                ***
+#*** Updated: 2013/11/15                                            ***
+#***                                                                ***
+#**********************************************************************
+INCLUDE conf/tk4-_updates/01
+INCLUDE conf/tk4-_updates/02
+INCLUDE conf/tk4-_updates/03
+INCLUDE conf/tk4-_updates/04
+INCLUDE conf/tk4-_updates/05
+INCLUDE conf/tk4-_updates/06
+INCLUDE conf/tk4-_updates/07
+INCLUDE conf/tk4-_updates/08
+INCLUDE conf/tk4-_updates/09
+INCLUDE conf/tk4-_updates/10

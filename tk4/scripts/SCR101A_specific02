@@ -1,0 +1,15 @@
+#**********************************************************************
+#***                                                                ***
+#*** Script:  SCR101A_specific02                                    ***
+#***                                                                ***
+#*** Purpose: OS/VS2-MVS 3.8j IPL for unattended operations         ***
+#***          Enter R 00,CMD=02 to IEA101A (minimal initialization) ***
+#***                                                                ***
+#*** Updated: 2014/12/22                                            ***
+#***                                                                ***
+#**********************************************************************
+#
+# delay reply to message IEA101A
+#
+pause ${IPL_PAUSE:=4}
+/R 00,CMD=02

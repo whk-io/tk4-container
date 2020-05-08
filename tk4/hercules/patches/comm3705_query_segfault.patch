@@ -1,0 +1,16 @@
+--- old/comm3705.c	2013-07-15 10:59:22.000000000 +0200
++++ new/comm3705.c	2015-03-20 18:30:00.000000000 +0100
+@@ -1662,10 +1662,11 @@
+ /*-------------------------------------------------------------------*/
+ /* Query the device definition                                       */
+ /*-------------------------------------------------------------------*/
+-static void commadpt_query_device (DEVBLK *dev, char **class,
++static void commadpt_query_device (DEVBLK *dev, char **devclass,
+                 int buflen, char *buffer)
+ {
+-    *class = "LINE";
++    BEGIN_DEVICE_CLASS_QUERY( "LINE", dev, devclass, buflen, buffer );
++
+     snprintf(buffer,buflen-1,"Read count=%d, Write count=%d IO[%" I64_FMT "u]", 
+         dev->commadpt->read_ccw_count, dev->commadpt->write_ccw_count, dev->excps );
+ }

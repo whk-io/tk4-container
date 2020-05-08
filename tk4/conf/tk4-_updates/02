@@ -1,0 +1,12 @@
+#
+# set CCKD options
+#
+cckd gcint=${GCINT:=10},fsync=${FSYNC:=0}
+#
+# load s37x if requested
+#
+${S37X:=#}
+#
+# load dyncrypt if requested
+#
+${DYNCRYPT:=#}

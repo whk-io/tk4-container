@@ -1,0 +1,11 @@
+ #*********************************************************************
+ #***                                                               ***
+ #*** Script:  3270 Graphics Demo                                   ***
+ #***                                                               ***
+ #*** Purpose: load card decks to run the 3270 Graphics Demo        ***
+ #***          program on reader $(RDR) using terminal $(GRAF).     ***
+ #***                                                               ***
+ #*** Updated: 2015/12/18                                           ***
+ #***                                                               ***
+ #*********************************************************************
+devinit $(RDR) rdr/t3270lgo.deck rdr/terminal_$(GRAF).card logo/sos3270.pss ebcdic eof multifile

@@ -1,0 +1,18 @@
+#**********************************************************************
+#***                                                                ***
+#*** Script:  z_eod                                                 ***
+#***                                                                ***
+#*** Purpose: perform end of day processing                         ***
+#***                                                                ***
+#*** Updated: 2013/11/18                                            ***
+#***                                                                ***
+#**********************************************************************
+#
+# don't hurry
+#
+* pausing for 3 seconds, please stand by.
+pause 3
+#
+# perform end of day processing
+#
+/Z EOD

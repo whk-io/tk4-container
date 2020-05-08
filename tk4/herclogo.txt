@@ -1,0 +1,59 @@
+@ALIGN NONE
+@SBA 0,0
+@SF P
+Hercules Version  :
+@SF HP
+$(VERSION)
+@NL
+@SF P
+Host name         :
+@SF HP
+$(HOSTNAME)
+@NL
+@SF P
+Host OS           :
+@SF HP
+$(HOSTOS)-$(HOSTOSREL) $(HOSTOSVER)
+@NL
+@SF P
+Host Architecture :
+@SF HP
+$(HOSTARCH)
+@NL
+@SF P
+Processors        :
+@SF HP
+$(HOSTNUMCPUS)
+@NL
+@SF P
+LPAR Name         :
+@SF HP
+$(LPARNAME)
+@NL
+@SF P
+Device number     :
+@SF HP
+$(CSS):$(CCUU)
+@NL
+@SF P
+Subchannel        :
+@SF HP
+$(SUBCHAN)
+@SF P
+@ALIGN LEFT
+                           ************   ****  *****          ||
+                           **   **   **    **    **           |||
+                           **   **   **    **   **           ||||
+                                **         **  **           || ||
+        |l      _,,,---,,_      **         ** **           ||  ||
+ ZZZzz /,'.-'`'    -.  ;-;;,    **         ****           ||   ||
+      |,4-  ) )-,_. ,( (  ''-'  **         *****         ||    ||
+     '---''(_/--'  `-')_)       **         **  **       ||     ||    ||||||||||
+                                **         **   **      |||||||||||  Update 08
+       The MVS 3.8j             **         **    **            ||
+     Tur(n)key System           **         **     **           ||
+                              ******      ****     ***       ||||||
+
+            TK3 created by Volker Bandke       vbandke@bsp-gmbh.com
+            TK4- update by Juergen Winkelmann  winkelmann@id.ethz.ch
+                     see TK4-.CREDITS for complete credits

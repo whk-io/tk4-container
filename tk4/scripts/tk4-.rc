@@ -1,0 +1,31 @@
+#**********************************************************************
+#***                                                                ***
+#*** Script:  tk4-.rc                                               ***
+#***                                                                ***
+#*** Purpose: complete TK4- initialization and display logo         ***
+#***                                                                ***
+#*** Updated: 2016/08/19                                            ***
+#***                                                                ***
+#**********************************************************************
+pause 1
+script scripts/tk4-_updates.rc
+${LOCALRC:=script scripts/local.rc}
+pause 1
+*
+*                           ************   ****  *****          ||
+*                           **   **   **    **    **           |||
+*                           **   **   **    **   **           ||||
+*                                **         **  **           || ||
+*        |l      _,,,---,,_      **         ** **           ||  ||
+* ZZZzz /,'.-'`'    -.  ;-;;,    **         ****           ||   ||
+*      |,4-  ) )-,_. ,( (  ''-'  **         *****         ||    ||
+*     '---''(_/--'  `-')_)       **         **  **       ||     ||    ||||||||||
+*                                **         **   **      |||||||||||  Update 08
+*       The MVS 3.8j             **         **    **            ||
+*     Tur(n)key System           **         **     **           ||
+*                              ******      ****     ***       ||||||
+*
+*            TK3 created by Volker Bandke       vbandke@bsp-gmbh.com
+*            TK4- update by Juergen Winkelmann  winkelmann@id.ethz.ch
+*                     see TK4-.CREDITS for complete credits
+*

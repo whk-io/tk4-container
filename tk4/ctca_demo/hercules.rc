@@ -1,0 +1,33 @@
+ #*********************************************************************
+ #***                                                               ***
+ #***          Sample Operating System     Version 2.00             ***
+ #***                                                               ***
+ #*********************************************************************
+ #***                                                               ***
+ #*** File:    hercules.rc                                          ***
+ #***                                                               ***
+ #*** Purpose: Hercules startup for Sample Operating System         ***
+ #***          Version for use with CTCA demo                       ***
+ #***                                                               ***
+ #*** Updated: 2016/05/28                                           ***
+ #***                                                               ***
+ #*********************************************************************
+pause 1
+*
+* activating HAO rules
+*
+hao tgt HHCTE009I Client
+hao cmd devinit 30C rdr/clear_console.deck rdr/terminal_0C0.card ebcdic eof multifile
+hao tgt 0:00C0 COMM:
+hao cmd devinit 30C rdr/clear_console.deck rdr/terminal_0C0.card ebcdic eof multifile
+*
+* IPL Sample Operating System
+*
+ipl c
+pause 1
+*
+* Sample Operating System loaded.
+*
+* Review file README.txt for information on how to run the
+* CTCA demo program contained in this distribution.
+*

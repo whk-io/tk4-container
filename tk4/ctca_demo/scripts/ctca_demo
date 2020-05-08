@@ -1,0 +1,11 @@
+ #*********************************************************************
+ #***                                                               ***
+ #*** Script:  Channel to channel adaptor demo                      ***
+ #***                                                               ***
+ #*** Purpose: load card decks to run the CTCA Demo program on      ***
+ #***          reader $(RDR) using terminal $(GRAF) and CTCA 610.   ***
+ #***                                                               ***
+ #*** Updated: 2016/05/28                                           ***
+ #***                                                               ***
+ #*********************************************************************
+devinit $(RDR) rdr/ctca_demo.deck rdr/terminal_$(GRAF).card rdr/peers_$(SYSNUM).card logo/sos3270.pss ebcdic eof multifile

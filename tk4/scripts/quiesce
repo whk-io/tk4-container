@@ -1,0 +1,18 @@
+#**********************************************************************
+#***                                                                ***
+#*** Script:  quiesce                                               ***
+#***                                                                ***
+#*** Purpose: quiesce the system                                    ***
+#***                                                                ***
+#*** Updated: 2013/11/18                                            ***
+#***                                                                ***
+#**********************************************************************
+#
+# don't hurry
+#
+* pausing for 3 seconds, please stand by.
+pause 3
+#
+# quiesce the system
+#
+/QUIESCE
