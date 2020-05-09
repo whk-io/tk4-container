@@ -6,6 +6,9 @@ OS/VS2 MVS 3.8j Service Level 8505 Tur(n)key Level 4- Version 1.00
      alt="Terminal"
      style="float: left; margin-right: 10px;" />
 
+## Pull container
+```docker pull goldimage/tk4:latest```
+
 ## Build container
 ```make```
 
