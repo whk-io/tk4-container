@@ -9,10 +9,16 @@ OS/VS2 MVS 3.8j Service Level 8505 Tur(n)key Level 4- Version 1.00
 ## Pull container
 ```docker pull goldimage/tk4:latest```
 
+## Run container
+```docker run -it -p 3270:3270 -p 8038:8038 goldimage/tk4:latest```
+
+## Run container as a daemon
+```docker run -d -p 3270:3270 -p 8038:8038 goldimage/tk4:latest```
+
 ## Build container
 ```make```
 
-## Run Container
+## Run container via Makefile
 ```make run```
 
 ## Browser Clients
