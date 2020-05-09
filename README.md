@@ -7,9 +7,9 @@ OS/VS2 MVS 3.8j Service Level 8505 Tur(n)key Level 4- Version 1.00
      style="float: left; margin-right: 10px;" />
 
 ## Pull container
-```docker pull goldimage/tk4:latest```
+```docker pull goldimage/tk4:latest``` : for x86_64
 
-```docker pull goldimage/tk4-arm:latest``` : for Raspberry Pi
+```docker pull goldimage/tk4-arm:latest``` : for Raspberry Pi (ARMv7)
 
 ## Run container
 ```docker run -it -p 3270:3270 -p 8038:8038 goldimage/tk4:latest```
